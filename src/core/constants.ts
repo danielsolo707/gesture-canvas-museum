@@ -1,0 +1,87 @@
+import { LANDMARK_INDICES as L } from './types';
+
+export const WEBCAM = {
+  WIDTH: 640,
+  HEIGHT: 480,
+  FPS: 30,
+  FACING_MODE: 'user',
+} as const;
+
+export const INFERENCE = {
+  EVERY_NTH_FRAME: 2,
+  MAX_HANDS: 2,
+  MIN_HAND_CONFIDENCE: 0.5,
+  MODEL_PATH: '/models/hand_landmarker.task',
+  DELEGATE: 'CPU' as const,
+} as const;
+
+export const GESTURE = {
+  DEBOUNCE_FRAMES: 4,
+  COOLDOWN_MS: 300,
+  CLEAR_HOLD_MS: 1500,
+  MIN_CONFIDENCE: 0.6,
+  FINGER_EXTENSION_THRESHOLD: 0.15,
+  FIST_THRESHOLD: 0.08,
+  TWO_FINGER_MAX_SEPARATION: 0.12,
+} as const;
+
+export const SMOOTHING = {
+  MIN_CUTOFF: 1.0,
+  BETA: 0.007,
+  D_CUTOFF: 1.0,
+  HISTORY_SIZE: 5,
+} as const;
+
+export const DRAWING = {
+  DEFAULT_WIDTH: 0.015,
+  MIN_WIDTH: 0.005,
+  MAX_WIDTH: 0.04,
+  ERASER_MIN_WIDTH: 0.03,
+  ERASER_MAX_WIDTH: 0.12,
+  MIN_POINT_DISTANCE: 0.002,
+  UNDO_DEPTH: 50,
+  MAX_POINTS_PER_STROKE: 5000,
+} as const;
+
+export const RENDER = {
+  BG_COLOR: 0x0a0a0f,
+  STROKE_SEGMENTS: 8,
+  HAND_OVERLAY_OPACITY: 0.3,
+  GESTURE_INDICATOR_SIZE: 0.05,
+} as const;
+
+export const PERFORMANCE = {
+  TARGET_FPS: 60,
+  LOW_FPS_THRESHOLD: 25,
+  ADAPTIVE_QUALITY_INTERVAL_MS: 5000,
+  FPS_SAMPLE_WINDOW: 60,
+  STORE_SYNC_INTERVAL_MS: 66,
+} as const;
+
+export const FALLBACK = {
+  DRAW_BUTTON: 0,
+  ERASE_BUTTON: 2,
+  COLOR_CYCLE_KEY: 'KeyC',
+  CLEAR_KEY: 'KeyX',
+  UNDO_KEY: 'KeyZ',
+} as const;
+
+export const STORE_SYNC_INTERVAL_MS = 66;
+
+export const Z_LAYERS = {
+  CANVAS: 0,
+  STROKES: 1,
+  HAND_OVERLAY: 10,
+  GESTURE_INDICATOR: 20,
+  UI_OVERLAY: 100,
+} as const;
+
+export const FINGER_TIP_INDICES: number[] = [
+  L.THUMB_TIP, L.INDEX_TIP, L.MIDDLE_TIP, L.RING_TIP, L.PINKY_TIP,
+];
+export const FINGER_MCP_INDICES: number[] = [
+  L.THUMB_MCP, L.INDEX_MCP, L.MIDDLE_MCP, L.RING_MCP, L.PINKY_MCP,
+];
+export const FINGER_PIP_INDICES: number[] = [
+  L.THUMB_IP, L.INDEX_PIP, L.MIDDLE_PIP, L.RING_PIP, L.PINKY_PIP,
+];
