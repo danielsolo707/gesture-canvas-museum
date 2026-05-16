@@ -1,149 +1,121 @@
-# Gesture Canvas / بوم حرکتی
+﻿# Gesture Canvas Museum
 
-> **Museum-grade interactive gesture drawing system**  
-> Visitors draw in the air using hand gestures detected through a webcam.
->
-> **سیستم تعاملی نقاشی با حرکات دست در سطح موزه**  
-> بازدیدکنندگان با حرکات دست در هوا نقاشی می‌کنند.
+Museum-grade interactive gesture drawing system. Visitors draw in the air using hand gestures detected through a webcam.
 
----
+## Features
 
-## ✨ Features / قابلیت‌ها
+- Air drawing with index-finger tracking
+- Simultaneous two-hand detection
+- Gesture controls for draw, eraser, color cycle, stop, clear, and dual-hand mode
+- Three.js ribbon rendering for colorful strokes
+- Mouse fallback for testing without webcam tracking
+- Local CPU-only MediaPipe hand tracking
+- Debug log panel and Playwright camera diagnostic
 
-- **Air Drawing** — Draw with your index finger using real-time hand tracking
-- **Both Hands** — Supports simultaneous two-hand drawing
-- **6 Gesture Controls:**
-  - 👆 **Draw** — index finger extended
-  - ✌️ **Eraser** — two fingers, size controlled by finger spread
-  - 🤟 **Color Select** — three fingers extended
-  - ✊ **Stop** — closed fist
-  - 🖐️ **Clear Canvas** — open palm held 1.5 seconds
-  - 🤲 **Dual Hand** — both hands drawing simultaneously
-- **Gesture Indicators** — visual feedback for active gesture
-- **3D Ribbon Rendering** — smooth colorful strokes via Three.js
-- **Mouse/Touch Fallback** — works without a webcam
-- **Kiosk Mode** — fullscreen, context-menu prevention, crash recovery
+## Offline Museum Run
 
-**Tech Stack:** Vite · React 18 · TypeScript · Three.js · Zustand · MediaPipe Hand Landmarker
+After the prerequisites are downloaded once, the app can run with the internet off.
 
----
+Required local files:
 
-## 🚀 Quick Start / شروع سریع
+- `node_modules/`
+- `public/models/hand_landmarker.task`
+- `public/tasks-vision/wasm/*`
+
+One-time setup while online:
 
 ```bash
-# Clone / download the project
-cd gesture-canvas-museum
-
-# Install dependencies
 npm install
-
-# Download the MediaPipe hand tracking model (~7.8 MB)
 powershell -File scripts/download-model.ps1
-
-# Start development server
-npm run dev
-# → http://localhost:3000
+npm run copy-mediapipe
 ```
 
-### Production Build / ساخت نهایی
+Run offline:
 
 ```bash
-npm run build      # → dist/
-npm run preview    # preview production build
+npm run build
+npm run start:local
+# http://localhost:3000
 ```
 
----
+No CDN is used at runtime. MediaPipe loads from the local `@mediapipe/tasks-vision` package, local WASM files copied into `public/tasks-vision/wasm`, and the local hand model in `public/models`.
 
-## 🎮 Controls / کنترل‌ها
+## Development
 
-### Gesture Mode (webcam required)
+```bash
+npm run dev
+# http://localhost:3000
+```
 
-| Gesture | Action | Fingers |
-|---------|--------|---------|
-| Draw | Start drawing | Index extended, others closed |
-| Stop Drawing | Pause stroke | Closed fist |
-| Eraser | Erase strokes | Index + middle extended |
-| Color Select | Cycle color | Index + middle + ring extended |
-| Clear Canvas | Clear all (hold 1.5s) | Open palm, all 5 fingers |
-| Dual Hand | Both hands draw | Both hands in draw gesture |
+## Verification
 
-### Fallback Mode (mouse/keyboard — no webcam needed)
+```bash
+npm run typecheck
+npm run build
+npm run diagnose:camera
+```
+
+`npm run diagnose:camera` opens Chrome, captures console/debug logs, writes `tmp-playwright-diagnose.json`, and saves `tmp-playwright-diagnose.png`.
+
+## Controls
+
+### Gesture Mode
+
+| Gesture | Action |
+| --- | --- |
+| Index finger extended | Draw |
+| Index + middle extended | Erase |
+| Index + middle + ring extended | Cycle color |
+| Closed fist | Stop drawing |
+| Open palm held | Clear canvas |
+| Two drawing hands | Dual-hand drawing |
+
+### Fallback Mode
 
 | Input | Action |
-|-------|--------|
+| --- | --- |
 | Left-click + drag | Draw |
 | `C` | Cycle color |
 | `X` | Clear canvas |
-| `Ctrl` + `Z` | Undo |
+| `Ctrl+Z` | Undo |
 
----
+## Architecture
 
-## 🏗️ Architecture / معماری
-
-```
+```text
 src/
-├── core/          Engine, EventBus, Pipeline, types
-├── tracking/      WebcamManager, HandTracker (MediaPipe)
-├── workers/       Web Worker for MediaPipe inference
-├── gestures/      6 gesture detectors + FSM + debouncer
-├── drawing/       StrokeEngine, Stroke, drawing buffer
-├── rendering/     Three.js scene, stroke renderer, hand overlay
-├── smoothing/     OneEuroFilter (jitter reduction)
-├── features/      Color engine, eraser, canvas history
-├── store/         Zustand store (flat, single source of truth)
-├── hooks/         React hooks (engine, gesture, drawing)
-├── ui/            React components, styles, app shell
-└── utils/         Math, object pool, logger, kiosk helpers
+  core/       Engine, EventBus, Pipeline, types
+  tracking/   WebcamManager, direct local MediaPipe HandTracker
+  gestures/   Gesture detectors, FSM, debouncer
+  drawing/    StrokeEngine, Stroke, drawing buffer
+  rendering/  Three.js scene, stroke renderer, hand overlay
+  features/   Color engine, eraser, canvas history
+  store/      Flat Zustand store
+  hooks/      React hooks
+  ui/         React components and styles
+  utils/      Math, logger, kiosk helpers
 ```
 
-### Key Design Decisions
+## Key Design Decisions
 
-- **Engine runs outside React** — its own `requestAnimationFrame` loop, never inside the React render cycle
-- **EventBus decouples layers** — gesture detectors → SceneManager → renderers via typed events
-- **Flat Zustand store** — no nested slices, direct property access with `useStore(s => s.property)`
-- **OneEuroFilter** — adaptive low-pass filter for jitter reduction (low smoothing when still, responsive when moving)
-- **Ribbon mesh rendering** — quad strips with vertex colors, lightweight geometry updates
-- **Web Worker** — MediaPipe inference runs off the main thread via `tracking.worker.ts`
+- Engine runs outside React in its own `requestAnimationFrame` loop.
+- MediaPipe is loaded locally and runs CPU-only.
+- No worker is used.
+- All Three.js disposal is explicit.
+- Zustand store stays flat.
 
----
+## Dependencies
 
-## ⚙️ Performance Targets / اهداف عملکردی
+- `@mediapipe/tasks-vision`
+- `three`
+- `zustand`
+- React 18 + TypeScript
 
-| Metric | Target | Notes |
-|--------|--------|-------|
-| Frame rate | 30–60 fps | CPU-only inference every 2nd frame |
-| Memory | <200 MB stable | Object pooling, ring buffers, explicit disposal |
-| Startup | <3 seconds | Async model load with fallback mode |
-| Runtime stability | 8+ hours | Auto-recovery watchdog, error boundaries |
-
-Optimized for: **8GB RAM, no GPU, CPU-only** (museum kiosk hardware).
-
----
-
-## 📦 Dependencies
-
-- `three` + `@react-three/fiber` + `@react-three/drei` — 3D rendering
-- `zustand` — state management
-- `@mediapipe/tasks-vision` — hand landmark detection
-- React 18 + TypeScript 5 — UI framework
-
----
-
-## 🧹 Commands
+## Commands
 
 ```bash
-npm run dev         # development server
-npm run build       # production build
-npm run typecheck   # TypeScript type checking
-npm run preview     # preview production build
+npm run dev             # development server
+npm run build           # production build
+npm run start:local     # local kiosk server at http://localhost:3000
+npm run typecheck       # TypeScript check
+npm run diagnose:camera # camera/debug diagnostic
 ```
-
----
-
-## 📝 License
-
-MIT — use freely for museum installations, educational purposes, or any project.
-
----
-
-> Built for [موزه / Museum] — May 2026

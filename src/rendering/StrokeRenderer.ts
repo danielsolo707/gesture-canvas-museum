@@ -25,6 +25,8 @@ export class StrokeRenderer {
   addStroke(stroke: StrokeData): void {
     if (stroke.points.length < 2) return;
 
+    this.removeStroke(stroke.id);
+
     const geo = this.buildRibbonGeometry(stroke);
     const mesh = new THREE.Mesh(geo, this.material);
     mesh.renderOrder = 1;
@@ -74,15 +76,37 @@ export class StrokeRenderer {
     const pts = stroke.points;
     const width = stroke.width * 0.005;
     const color = new THREE.Color(stroke.color);
+    const capSegments = 10;
 
     if (pts.length < 2) {
       return new THREE.BufferGeometry();
     }
 
-    const vertexCount = (pts.length - 1) * 4;
-    const positions = new Float32Array(vertexCount * 3);
-    const vertColors = new Float32Array(vertexCount * 3);
-    const indices = new Uint16Array((pts.length - 1) * 6);
+    const baseVertexCount = (pts.length - 1) * 4;
+    const capVertexCount = pts.length * (capSegments + 1);
+    const totalVertexCount = baseVertexCount + capVertexCount;
+    const baseIndexCount = (pts.length - 1) * 6;
+    const capIndexCount = pts.length * capSegments * 3;
+    const totalIndexCount = baseIndexCount + capIndexCount;
+    const useUint32 = totalVertexCount > 65535;
+
+    const positions = new Float32Array(totalVertexCount * 3);
+    const vertColors = new Float32Array(totalVertexCount * 3);
+    const indices = useUint32 ? new Uint32Array(totalIndexCount) : new Uint16Array(totalIndexCount);
+
+    let v = 0;
+    let idx = 0;
+
+    const writeVertex = (x: number, y: number, z: number): number => {
+      const base = v * 3;
+      positions[base] = x;
+      positions[base + 1] = y;
+      positions[base + 2] = z;
+      vertColors[base] = color.r;
+      vertColors[base + 1] = color.g;
+      vertColors[base + 2] = color.b;
+      return v++;
+    };
 
     for (let i = 1; i < pts.length; i++) {
       const p0 = pts[i - 1];
@@ -94,37 +118,47 @@ export class StrokeRenderer {
       const nx = -dy / len;
       const ny = dx / len;
 
-      const i0 = (i - 1) * 4;
+      const v0 = writeVertex(p0.x + nx * width, p0.y + ny * width, p0.z ?? 0);
+      const v1 = writeVertex(p0.x - nx * width, p0.y - ny * width, p0.z ?? 0);
+      const v2 = writeVertex(p1.x + nx * width, p1.y + ny * width, p1.z ?? 0);
+      const v3 = writeVertex(p1.x - nx * width, p1.y - ny * width, p1.z ?? 0);
 
-      positions[i0 * 3] = p0.x + nx * width;
-      positions[i0 * 3 + 1] = p0.y + ny * width;
-      positions[i0 * 3 + 2] = p0.z ?? 0;
+      indices[idx++] = v0;
+      indices[idx++] = v1;
+      indices[idx++] = v2;
+      indices[idx++] = v1;
+      indices[idx++] = v3;
+      indices[idx++] = v2;
+    }
 
-      positions[(i0 + 1) * 3] = p0.x - nx * width;
-      positions[(i0 + 1) * 3 + 1] = p0.y - ny * width;
-      positions[(i0 + 1) * 3 + 2] = p0.z ?? 0;
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i];
+      const centerIdx = writeVertex(p.x, p.y, p.z ?? 0);
+      let firstRing = -1;
+      let prevRing = -1;
 
-      positions[(i0 + 2) * 3] = p1.x + nx * width;
-      positions[(i0 + 2) * 3 + 1] = p1.y + ny * width;
-      positions[(i0 + 2) * 3 + 2] = p1.z ?? 0;
+      for (let s = 0; s < capSegments; s++) {
+        const angle = (s / capSegments) * Math.PI * 2;
+        const rx = p.x + Math.cos(angle) * width;
+        const ry = p.y + Math.sin(angle) * width;
+        const ringIdx = writeVertex(rx, ry, p.z ?? 0);
 
-      positions[(i0 + 3) * 3] = p1.x - nx * width;
-      positions[(i0 + 3) * 3 + 1] = p1.y - ny * width;
-      positions[(i0 + 3) * 3 + 2] = p1.z ?? 0;
+        if (s === 0) {
+          firstRing = ringIdx;
+        } else {
+          indices[idx++] = centerIdx;
+          indices[idx++] = prevRing;
+          indices[idx++] = ringIdx;
+        }
 
-      for (let v = 0; v < 4; v++) {
-        vertColors[(i0 + v) * 3] = color.r;
-        vertColors[(i0 + v) * 3 + 1] = color.g;
-        vertColors[(i0 + v) * 3 + 2] = color.b;
+        prevRing = ringIdx;
       }
 
-      const ii = (i - 1) * 6;
-      indices[ii] = i0;
-      indices[ii + 1] = i0 + 1;
-      indices[ii + 2] = i0 + 2;
-      indices[ii + 3] = i0 + 1;
-      indices[ii + 4] = i0 + 3;
-      indices[ii + 5] = i0 + 2;
+      if (firstRing !== -1 && prevRing !== -1) {
+        indices[idx++] = centerIdx;
+        indices[idx++] = prevRing;
+        indices[idx++] = firstRing;
+      }
     }
 
     const geo = new THREE.BufferGeometry();

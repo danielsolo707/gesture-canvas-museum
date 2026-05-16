@@ -1,12 +1,14 @@
-import { EngineState, EngineMode, EngineStats } from './types';
-import { PERFORMANCE, STORE_SYNC_INTERVAL_MS } from './constants';
+import { EngineState, EngineMode, EngineStats, StrokePoint, Handedness, HandSnapshot, GestureType } from './types';
+import { PERFORMANCE, GESTURE } from './constants';
 import { EventBus, globalEventBus } from './EventBus';
-import { Pipeline } from './Pipeline';
 import { WebcamManager } from '../tracking/WebcamManager';
 import { HandTracker } from '../tracking/HandTracker';
 import { GestureRecognizer } from '../gestures/GestureRecognizer';
 import { StrokeEngine } from '../drawing/StrokeEngine';
+import { ColorEngine } from '../features/colors/ColorEngine';
 import { SceneManager } from '../rendering/SceneManager';
+import { useStore } from '../store/useStore';
+import { logger } from '../utils/logging';
 
 export interface EngineConfig {
   canvas: HTMLCanvasElement;
@@ -17,7 +19,6 @@ export class Engine {
   private state: EngineState = 'uninitialized';
   private mode: EngineMode;
   private bus: EventBus;
-  private pipeline: Pipeline;
   private webcam: WebcamManager;
   private tracker: HandTracker;
   private gesture: GestureRecognizer;
@@ -27,7 +28,6 @@ export class Engine {
 
   private rafId: number | null = null;
   private lastFrameTime = 0;
-  private frameCount = 0;
   private fpsValues: number[] = [];
   private lastFpsUpdate = 0;
   private running = false;
@@ -37,15 +37,24 @@ export class Engine {
     activeHands: 0, strokeCount: 0, mode: 'camera',
   };
 
+  private activeDrawHands: Set<string> = new Set();
+  private colorEngine: ColorEngine;
+  private colorDwellIndex: number | null = null;
+  private colorDwellStart = 0;
+  private smoothHoverX = 0;
+  private clearHoldStart = 0;
+  private clearHoldActive = false;
+  private clearCooldownUntil = 0;
+
   constructor(config: EngineConfig) {
     this.config = config;
     this.mode = config.mode ?? 'camera';
     this.bus = globalEventBus;
-    this.pipeline = new Pipeline();
     this.webcam = new WebcamManager();
     this.tracker = new HandTracker();
     this.gesture = new GestureRecognizer();
     this.drawing = new StrokeEngine();
+    this.colorEngine = new ColorEngine();
     this.scene = new SceneManager(config.canvas);
   }
 
@@ -61,15 +70,23 @@ export class Engine {
       this.scene.initialize();
       this.drawing.initialize();
       this.gesture.initialize();
-      this.pipeline.setStrokeEngine(this.drawing);
-      this.pipeline.on('stroke', (s) => this.bus.emit('stroke_added', s));
 
       if (this.mode === 'camera') {
         try {
+          logger.info('Engine starting webcam');
           await this.webcam.start();
+          this.onWebcamReady();
+          useStore.getState().setMode('camera');
+          useStore.getState().setWebcamReady(true);
+          logger.info('Engine initializing tracker');
           await this.tracker.initialize();
-        } catch {
+          logger.info('Engine camera tracking ready');
+        } catch (err) {
+          logger.error('Engine camera/tracker failed; switching to fallback', err);
           this.mode = 'fallback';
+          useStore.getState().setMode('fallback');
+          useStore.getState().setWebcamReady(false);
+          useStore.getState().setWebcamError(err instanceof Error ? err.message : String(err));
         }
       }
 
@@ -114,15 +131,23 @@ export class Engine {
     this.bus.emit('engine_state', s);
   }
 
+  private onWebcamReady(): void {
+    const video = this.webcam.getVideo();
+    if (video) {
+      this.scene.setVideoBackground(video);
+    }
+  }
+
+  private lastStrokeUpdate = 0;
+
   private loop = (now: number): void => {
     if (!this.running) return;
 
     const delta = now - this.lastFrameTime;
     this.lastFrameTime = now;
-    this.frameCount++;
 
-    if (this.frameCount % 2 === 0 && this.mode === 'camera') {
-      this.processTracking(now);
+    if (this.mode === 'camera') {
+      this.processTracking(now).catch(() => {});
     }
 
     this.processDrawing(now);
@@ -132,25 +157,163 @@ export class Engine {
     this.rafId = requestAnimationFrame(this.loop);
   };
 
-  private processTracking(now: number): void {
+  private async processTracking(now: number): Promise<void> {
     const t0 = performance.now();
     const video = this.webcam.getVideo();
     if (!video) return;
 
-    const hands = this.tracker.detect(video);
+    let hands: HandSnapshot[] = [];
+    try {
+      hands = await this.tracker.detect(video);
+    } catch (err) {
+      logger.error('Engine tracking detect failed', err);
+      hands = [];
+    }
     this._stats.inferenceMs = performance.now() - t0;
+    this.bus.emit('hand_update', { hands });
 
     if (hands.length > 0) {
-      this.bus.emit('hand_update', { hands });
       const t2 = performance.now();
-      const gestures = this.gesture.recognize(hands, now);
+      const { events, handStates } = this.gesture.recognize(hands, now);
       this._stats.gestureMs = performance.now() - t2;
-      for (const g of gestures) {
+
+      for (const g of events) {
         this.bus.emit('gesture', g);
-        if (g.type === 'clear_canvas' && g.confidence >= 1) {
-          this.drawing.clearAll();
+      }
+
+      const visibleHandKeys = new Set<string>();
+      const sortedHands = [...hands].sort((a, b) => getHandCenterX(a) - getHandCenterX(b));
+
+      // Sync primary gesture to store for the gesture indicator
+      let primaryGesture: GestureType | null = null;
+      let primaryConfidence = 0;
+      for (const hand of sortedHands) {
+        const st = handStates.get(hand.handedness);
+        if (st && st.type && st.confidence > primaryConfidence) {
+          primaryGesture = st.type;
+          primaryConfidence = st.confidence;
         }
       }
+      if (primaryGesture) {
+        useStore.getState().setGesture(primaryGesture as GestureType, sortedHands[0]?.handedness ?? 'Right', primaryConfidence);
+      }
+
+      for (let i = 0; i < sortedHands.length; i++) {
+        const hand = sortedHands[i];
+        const handKey = getHandKey(hand, i);
+        visibleHandKeys.add(handKey);
+
+        const point = getDrawingPoint(hand.landmarks);
+        if (!point) continue;
+
+        const handState = handStates.get(hand.handedness);
+        const gestureType = handState?.type ?? null;
+
+        const idxTip = getLandmark(hand.landmarks, 8);
+        if (idxTip) {
+          useStore.getState().setCursor(idxTip[0], idxTip[1]);
+        }
+
+        if (gestureType === 'eraser') {
+          this.endActiveStroke(handKey);
+          this.drawing.eraseStrokesAtPoint(point.x, point.y, useStore.getState().eraserSize * 0.005);
+          continue;
+        }
+
+        if (gestureType === 'clear_canvas') {
+          this.endActiveStroke(handKey);
+          if (now < this.clearCooldownUntil) continue;
+          if (!this.clearHoldActive) {
+            this.clearHoldActive = true;
+            this.clearHoldStart = now;
+            useStore.getState().setClearProgress(0);
+          }
+          const elapsed = now - this.clearHoldStart;
+          const progress = Math.min(elapsed / GESTURE.CLEAR_HOLD_MS, 1);
+          useStore.getState().setClearProgress(progress);
+          if (progress >= 1) {
+            this.clearHoldActive = false;
+            this.clearCooldownUntil = now + 2000;
+            this.drawing.clearAll();
+            useStore.getState().clearAllStrokes();
+            useStore.getState().setClearProgress(0);
+            this.bus.emit('clear_canvas', undefined);
+          }
+          continue;
+        }
+        if (this.clearHoldActive) {
+          this.clearHoldActive = false;
+          useStore.getState().setClearProgress(0);
+        }
+
+        if (gestureType === 'color_select') {
+          this.endActiveStroke(handKey);
+          useStore.getState().setColorPaletteActive(true);
+
+          if (idxTip) {
+            this.smoothHoverX += (idxTip[0] - this.smoothHoverX) * 0.25;
+            const hoverIdx = Math.min(11, Math.max(0, Math.floor(this.smoothHoverX * 12)));
+            useStore.getState().setColorHoverIndex(hoverIdx);
+
+            if (hoverIdx !== this.colorDwellIndex) {
+              this.colorDwellIndex = hoverIdx;
+              this.colorDwellStart = now;
+            } else if (now - this.colorDwellStart > 400) {
+              this.colorEngine.selectColor(hoverIdx);
+              this.colorDwellStart = now;
+            }
+          }
+          continue;
+        }
+        useStore.getState().setColorPaletteActive(false);
+        useStore.getState().setColorHoverIndex(null);
+        this.colorDwellIndex = null;
+
+        if (gestureType === 'drawing' || !gestureType) {
+          const atTop = idxTip !== null && idxTip[1] < 0.10;
+          if (!atTop) {
+            if (!this.activeDrawHands.has(handKey)) {
+              const state = useStore.getState();
+              this.drawing.startStroke(handKey, point, state.color, state.strokeWidth, hand.handedness);
+              this.activeDrawHands.add(handKey);
+              useStore.getState().setIsDrawing(true);
+            } else {
+              this.drawing.extendStroke(handKey, point);
+            }
+            if (now - this.lastStrokeUpdate > 16) {
+              const active = this.drawing.getActiveStroke(handKey);
+              if (active) {
+                this.bus.emit('stroke_update', active.toData());
+              }
+              this.lastStrokeUpdate = now;
+            }
+          } else {
+            this.endActiveStroke(handKey);
+          }
+        } else {
+          this.endActiveStroke(handKey);
+        }
+      }
+
+      for (const handKey of [...this.activeDrawHands]) {
+        if (!visibleHandKeys.has(handKey)) {
+          this.endActiveStroke(handKey);
+        }
+      }
+    } else {
+      for (const h of this.activeDrawHands) {
+        const data = this.drawing.endStroke(h);
+        if (data) this.bus.emit('stroke_added', data);
+      }
+      this.activeDrawHands.clear();
+      this.clearHoldActive = false;
+      this.clearCooldownUntil = 0;
+      useStore.getState().setClearProgress(0);
+      useStore.getState().setGesture('idle', 'Left', 0);
+      useStore.getState().setGesture('idle', 'Right', 0);
+      useStore.getState().setIsDrawing(false);
+      useStore.getState().setCursor(null, null);
+      useStore.getState().setColorPaletteActive(false);
     }
 
     this._stats.activeHands = hands.length;
@@ -169,6 +332,7 @@ export class Engine {
   }
 
   private updateStats(now: number, delta: number): void {
+    if (delta <= 0) return;
     const fps = delta > 0 ? 1000 / delta : 60;
     this.fpsValues.push(fps);
     if (this.fpsValues.length > PERFORMANCE.FPS_SAMPLE_WINDOW) {
@@ -184,4 +348,46 @@ export class Engine {
       this.lastFpsUpdate = now;
     }
   }
+
+  private endActiveStroke(handKey: string): void {
+    if (!this.activeDrawHands.has(handKey)) return;
+
+    const data = this.drawing.endStroke(handKey);
+    if (data) this.bus.emit('stroke_added', data);
+    this.activeDrawHands.delete(handKey);
+    useStore.getState().setIsDrawing(this.activeDrawHands.size > 0);
+  }
+}
+
+function getLandmark(landmarks: Float32Array, index: number): [number, number, number] | null {
+  const i = index * 3;
+  if (i + 2 >= landmarks.length) return null;
+  return [landmarks[i], landmarks[i + 1], landmarks[i + 2]];
+}
+
+function getDrawingPoint(landmarks: Float32Array): StrokePoint | null {
+  const idxTip = getLandmark(landmarks, 8);
+  if (!idxTip) return null;
+  const aspect = window.innerWidth / window.innerHeight;
+  return {
+    x: (idxTip[0] - 0.5) * 2 * aspect,
+    y: -(idxTip[1] - 0.5) * 2,
+    z: 0,
+  };
+}
+
+function getHandKey(hand: HandSnapshot, index: number): string {
+  const wrist = getLandmark(hand.landmarks, 0);
+  const screenSide = wrist && wrist[0] < 0.5 ? 'screen-left' : 'screen-right';
+  return `${hand.handedness}:${screenSide}:${index}`;
+}
+
+function getHandCenterX(hand: HandSnapshot): number {
+  let total = 0;
+  let count = 0;
+  for (let i = 0; i < hand.landmarks.length; i += 3) {
+    total += hand.landmarks[i];
+    count++;
+  }
+  return count > 0 ? total / count : 0.5;
 }

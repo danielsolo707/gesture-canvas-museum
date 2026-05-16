@@ -1,56 +1,111 @@
 import { GESTURE } from '../core/constants';
 import { GestureType } from '../core/types';
 
-export class GestureDebouncer {
-  private countMap = new Map<string, number>();
-  private lastTriggered = new Map<string, number>();
-  private requiredFrames: number;
-  private cooldownMs: number;
+interface HysteresisState {
+  active: boolean;
+  activeType: GestureType | null;
+  activateCount: number;
+  deactivateCount: number;
+  pendingType: GestureType | null;
+}
 
-  constructor(requiredFrames = GESTURE.DEBOUNCE_FRAMES, cooldownMs = GESTURE.COOLDOWN_MS) {
-    this.requiredFrames = requiredFrames;
+export class GestureDebouncer {
+  private states = new Map<string, HysteresisState>();
+  private activateFrames: number;
+  private deactivateFrames: number;
+  private cooldownMs: number;
+  private lastTriggered = new Map<string, number>();
+
+  constructor(
+    activateFrames = GESTURE.ACTIVATE_FRAMES,
+    deactivateFrames = GESTURE.DEACTIVATE_FRAMES,
+    cooldownMs = GESTURE.COOLDOWN_MS,
+  ) {
+    this.activateFrames = activateFrames;
+    this.deactivateFrames = deactivateFrames;
     this.cooldownMs = cooldownMs;
   }
 
-  shouldTrigger(
-    gesture: GestureType,
-    hand: string,
-    detected: boolean,
-    now: number,
-  ): boolean {
-    const key = `${hand}:${gesture}`;
-    const last = this.lastTriggered.get(key) ?? 0;
-
-    if (now - last < this.cooldownMs) {
-      return false;
+  update(hand: string, detectedType: GestureType | null, now: number): {
+    activeGesture: GestureType | null;
+    changed: boolean;
+  } {
+    let state = this.states.get(hand);
+    if (!state) {
+      state = { active: false, activeType: null, activateCount: 0, deactivateCount: 0, pendingType: null };
+      this.states.set(hand, state);
     }
 
-    if (detected) {
-      const count = (this.countMap.get(key) ?? 0) + 1;
-      this.countMap.set(key, count);
+    const wasActive = state.active;
+    const wasType = state.activeType;
 
-      if (count >= this.requiredFrames) {
-        this.countMap.set(key, 0);
-        this.lastTriggered.set(key, now);
-        return true;
+    if (state.active) {
+      if (detectedType !== null && detectedType === state.activeType) {
+        state.deactivateCount = 0;
+      } else {
+        state.deactivateCount++;
+        if (state.deactivateCount >= this.deactivateFrames) {
+          state.active = false;
+          state.activeType = null;
+          state.deactivateCount = 0;
+          state.activateCount = 0;
+          state.pendingType = null;
+        }
       }
     } else {
-      this.countMap.set(key, 0);
+      if (detectedType !== null) {
+        if (state.pendingType === detectedType) {
+          state.activateCount++;
+          if (state.activateCount >= this.activateFrames) {
+            state.active = true;
+            state.activeType = detectedType;
+            state.activateCount = 0;
+            state.deactivateCount = 0;
+            state.pendingType = null;
+          }
+        } else {
+          state.pendingType = detectedType;
+          state.activateCount = 1;
+          state.deactivateCount = 0;
+        }
+      } else {
+        state.activateCount = 0;
+        state.pendingType = null;
+      }
     }
 
-    return false;
+    const changed = state.active !== wasActive || state.activeType !== wasType;
+
+    return {
+      activeGesture: state.activeType,
+      changed,
+    };
+  }
+
+  isActive(hand: string): boolean {
+    return this.states.get(hand)?.active ?? false;
+  }
+
+  getActiveGesture(hand: string): GestureType | null {
+    return this.states.get(hand)?.activeType ?? null;
+  }
+
+  shouldTriggerEvent(hand: string, gestureType: GestureType, now: number): boolean {
+    const key = `${hand}:${gestureType}`;
+    const last = this.lastTriggered.get(key) ?? 0;
+    if (now - last < this.cooldownMs) return false;
+    this.lastTriggered.set(key, now);
+    return true;
   }
 
   reset(hand?: string): void {
     if (hand) {
-      for (const key of this.countMap.keys()) {
-        if (key.startsWith(`${hand}:`)) {
-          this.countMap.set(key, 0);
-          this.lastTriggered.delete(key);
-        }
+      this.states.delete(hand);
+      for (const key of this.lastTriggered.keys()) {
+        if (key.startsWith(`${hand}:`)) this.lastTriggered.delete(key);
       }
     } else {
-      this.countMap.clear();
+      this.states.clear();
       this.lastTriggered.clear();
     }
   }

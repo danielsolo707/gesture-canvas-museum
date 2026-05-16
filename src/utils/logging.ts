@@ -8,6 +8,20 @@ export enum LogLevel {
 const LOG_LEVEL = LogLevel.INFO;
 
 const PREFIX = '[GestureCanvas]';
+const MAX_LOGS = 200;
+
+export interface DebugLogEntry {
+  level: keyof typeof LogLevel;
+  message: string;
+  time: string;
+  data?: unknown[];
+}
+
+declare global {
+  interface Window {
+    __GESTURE_DEBUG_LOGS?: DebugLogEntry[];
+  }
+}
 
 function log(level: LogLevel, message: string, ...args: unknown[]): void {
   if (level < LOG_LEVEL) return;
@@ -18,6 +32,17 @@ function log(level: LogLevel, message: string, ...args: unknown[]): void {
     : console.debug;
 
   fn(`${PREFIX} ${message}`, ...args);
+
+  if (typeof window !== 'undefined') {
+    const entry: DebugLogEntry = {
+      level: LogLevel[level] as keyof typeof LogLevel,
+      message,
+      time: new Date().toLocaleTimeString(),
+      data: args.length > 0 ? args : undefined,
+    };
+    window.__GESTURE_DEBUG_LOGS = [...(window.__GESTURE_DEBUG_LOGS ?? []), entry].slice(-MAX_LOGS);
+    window.dispatchEvent(new CustomEvent<DebugLogEntry>('gesture-debug-log', { detail: entry }));
+  }
 }
 
 export const logger = {

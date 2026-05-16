@@ -1,10 +1,14 @@
 import { useState, useCallback } from 'react';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ThreeCanvas } from './ThreeCanvas';
-import { Toolbar } from './components/Toolbar';
 import { GestureIndicator } from './components/GestureIndicator';
 import { ClearProgressRing } from './components/ClearProgressRing';
+import { BottomPalette } from './components/BottomPalette';
+
+import { CursorOverlay } from './components/CursorOverlay';
 import { WebcamStatus } from './components/WebcamStatus';
+import { HandStatus } from './components/HandStatus';
+import { HandDebugOverlay } from './components/HandDebugOverlay';
 import { FallbackControls } from './components/FallbackControls';
 import { PerformanceHUD } from './components/PerformanceHUD';
 import { StartupScreen } from './components/StartupScreen';
@@ -27,10 +31,13 @@ export function App() {
         <ThreeCanvas onEngineReady={handleEngineReady} />
 
         <div className="ui-overlay">
+          <BottomPalette />
+          <HandDebugOverlay />
+          <CursorOverlay />
           <GestureIndicator />
           <WebcamStatus />
+          <HandStatus />
           <ClearProgressRing />
-          <Toolbar />
           <FallbackControls />
           <PerformanceHUD />
         </div>

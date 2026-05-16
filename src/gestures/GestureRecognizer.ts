@@ -4,25 +4,32 @@ import { GestureResult, GestureDetector } from './types';
 import { GestureFSM } from './GestureFSM';
 import { GestureDebouncer } from './GestureDebouncer';
 import { DrawingDetector } from './detectors/DrawingDetector';
-import { ColorSelectDetector } from './detectors/ColorSelectDetector';
-import { StopDrawingDetector } from './detectors/StopDrawingDetector';
-import { ClearCanvasDetector } from './detectors/ClearCanvasDetector';
 import { EraserDetector } from './detectors/EraserDetector';
-import { DualHandDetector } from './detectors/DualHandDetector';
+import { ColorSelectDetector } from './detectors/ColorSelectDetector';
+import { ClearCanvasDetector } from './detectors/ClearCanvasDetector';
+import { computeHandShape } from './detectors/utils';
 
-type GestureHand = 'Left' | 'Right' | 'Both';
+export interface HandGestureState {
+  type: GestureType | null;
+  confidence: number;
+}
+
+export interface RecognizeResult {
+  events: GestureEvent[];
+  handStates: Map<Handedness, HandGestureState>;
+}
 
 export class GestureRecognizer {
   private detectors: GestureDetector[] = [];
   private fsm: GestureFSM;
   private debouncer: GestureDebouncer;
-  private clearHoldTimers: Map<string, { start: number; fired: boolean }> = new Map();
   private gestureCooldowns: Map<string, number> = new Map();
 
   constructor() {
     this.fsm = new GestureFSM();
     this.debouncer = new GestureDebouncer(
-      GESTURE.DEBOUNCE_FRAMES,
+      GESTURE.ACTIVATE_FRAMES,
+      GESTURE.DEACTIVATE_FRAMES,
       GESTURE.COOLDOWN_MS,
     );
   }
@@ -30,112 +37,89 @@ export class GestureRecognizer {
   initialize(): void {
     this.detectors = [
       new DrawingDetector(),
-      new StopDrawingDetector(),
-      new ColorSelectDetector(),
       new EraserDetector(),
-      new DualHandDetector(),
+      new ColorSelectDetector(),
       new ClearCanvasDetector(),
     ];
   }
 
-  recognize(hands: HandSnapshot[], now: number): GestureEvent[] {
+  recognize(hands: HandSnapshot[], now: number): RecognizeResult {
     const events: GestureEvent[] = [];
-    const detectedGestures: Map<Handedness, GestureResult | null> = new Map();
+    const handStates = new Map<Handedness, HandGestureState>();
 
     for (const hand of hands) {
+      const shape = computeHandShape(hand.landmarks);
+
       let bestResult: GestureResult | null = null;
-      let bestConfidence = 0;
+      let bestConfidence = -1;
 
       for (const detector of this.detectors) {
-        const result = detector.detect(hand.landmarks, hand.handedness);
+        const result = detector.detect(hand.landmarks, hand.handedness, shape);
         if (result && result.confidence > bestConfidence) {
           bestResult = result;
           bestConfidence = result.confidence;
         }
       }
 
-      detectedGestures.set(hand.handedness, bestResult);
+      const detectedType = bestResult?.type ?? null;
 
-      if (!bestResult) {
-        this.clearHoldTimers.delete(hand.handedness);
-        continue;
-      }
+      const { activeGesture, changed } = this.debouncer.update(
+        hand.handedness,
+        detectedType,
+        now,
+      );
 
-      if (bestResult.type === 'clear_canvas') {
-        this.processClearHold(hand.handedness, now, events);
-      } else {
-        this.clearHoldTimers.delete(hand.handedness);
-
-        const triggered = this.debouncer.shouldTrigger(
-          bestResult.type,
-          hand.handedness,
-          true,
-          now,
-        );
-
-        if (triggered) {
-          const cooldownKey = `${hand.handedness}:${bestResult.type}`;
-          const lastFired = this.gestureCooldowns.get(cooldownKey) ?? 0;
-          if (now - lastFired < GESTURE.COOLDOWN_MS) continue;
-
-          const newState = this.fsm.transition(bestResult.type, now);
-          if (newState === bestResult.type) {
+      if (changed && activeGesture) {
+        const cooldownKey = `${hand.handedness}:${activeGesture}`;
+        const lastFired = this.gestureCooldowns.get(cooldownKey) ?? 0;
+        if (now - lastFired >= GESTURE.COOLDOWN_MS) {
+          const newState = this.fsm.transition(activeGesture, now);
+          if (newState === activeGesture) {
             events.push({
-              type: bestResult.type,
+              type: activeGesture,
               hand: hand.handedness,
-              confidence: bestResult.confidence,
+              confidence: bestResult?.confidence ?? 0.5,
               timestamp: now,
-              data: bestResult.data,
+              data: bestResult?.data,
             });
             this.gestureCooldowns.set(cooldownKey, now);
           }
         }
       }
+
+      handStates.set(hand.handedness, {
+        type: activeGesture,
+        confidence: bestResult?.confidence ?? 0,
+      });
     }
 
-    this.checkDualHand(detectedGestures, now, events);
-    return events;
+    return { events, handStates };
   }
 
-  private processClearHold(hand: Handedness, now: number, events: GestureEvent[]): void {
-    let timer = this.clearHoldTimers.get(hand);
-    if (!timer) {
-      timer = { start: now, fired: false };
-      this.clearHoldTimers.set(hand, timer);
+  getHandStates(): Map<Handedness, HandGestureState> {
+    const result = new Map<Handedness, HandGestureState>();
+    for (const hand of ['Left', 'Right'] as Handedness[]) {
+      const gesture = this.debouncer.getActiveGesture(hand);
+      result.set(hand, { type: gesture, confidence: gesture ? 0.5 : 0 });
     }
-
-    if (timer.fired) return;
-
-    const elapsed = now - timer.start;
-    const progress = Math.min(elapsed / GESTURE.CLEAR_HOLD_MS, 1);
-
-    if (progress >= 1) {
-      timer.fired = true;
-      events.push({ type: 'clear_canvas', hand, confidence: 1, timestamp: now });
-    } else {
-      events.push({ type: 'clear_canvas', hand, confidence: progress, timestamp: now, data: { progress } });
-    }
+    return result;
   }
 
-  private checkDualHand(
-    detected: Map<Handedness, GestureResult | null>,
-    now: number,
-    events: GestureEvent[],
-  ): void {
-    if (detected.size < 2) return;
-    const left = detected.get('Left');
-    const right = detected.get('Right');
-    if (left?.type === 'drawing' && right?.type === 'drawing') {
-      const triggered = this.debouncer.shouldTrigger('dual_hand', 'both', true, now);
-      if (triggered) {
-        events.push({
-          type: 'dual_hand',
-          hand: 'Both' as GestureHand as Handedness,
-          confidence: Math.min(left.confidence, right.confidence),
-          timestamp: now,
-        });
+  getRawGestures(hands: HandSnapshot[]): Map<Handedness, GestureResult | null> {
+    const results = new Map<Handedness, GestureResult | null>();
+    for (const hand of hands) {
+      let best: GestureResult | null = null;
+      let bestConf = -1;
+      for (const detector of this.detectors) {
+        const result = detector.detect(hand.landmarks, hand.handedness);
+        if (result && result.confidence > bestConf) {
+          best = result;
+          bestConf = result.confidence;
+        }
       }
+      results.set(hand.handedness, best);
     }
+    return results;
   }
 
   getCurrentGesture(): GestureType {
@@ -147,7 +131,6 @@ export class GestureRecognizer {
     this.detectors.length = 0;
     this.fsm.destroy();
     this.debouncer.destroy();
-    this.clearHoldTimers.clear();
     this.gestureCooldowns.clear();
   }
 }

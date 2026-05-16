@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { RENDER, Z_LAYERS } from '../core/constants';
+import { RENDER } from '../core/constants';
 import { globalEventBus } from '../core/EventBus';
 import { HandSnapshot, StrokeData, GestureEvent } from '../core/types';
 import { StrokeRenderer } from './StrokeRenderer';
@@ -17,6 +17,8 @@ export class SceneManager {
   private handOverlay: HandOverlay | null = null;
   private gestureIndicator: GestureIndicator3D | null = null;
   private clearEffect: ClearEffect | null = null;
+  private videoBg: THREE.Mesh | null = null;
+  private videoTexture: THREE.VideoTexture | null = null;
   private initialized = false;
   private resizeObserver: ResizeObserver | null = null;
   private cleanupFns: (() => void)[] = [];
@@ -41,7 +43,7 @@ export class SceneManager {
     this.scene = new THREE.Scene();
 
     const aspect = this.canvas.clientWidth / this.canvas.clientHeight;
-    const frustumSize = 2;
+    const frustumSize = 1;
     this.camera = new THREE.OrthographicCamera(
       -frustumSize * aspect,
       frustumSize * aspect,
@@ -66,6 +68,40 @@ export class SceneManager {
     logger.info('SceneManager initialized');
   }
 
+  setVideoBackground(video: HTMLVideoElement): void {
+    if (!this.scene) return;
+
+    if (this.videoTexture) {
+      this.videoTexture.dispose();
+    }
+    if (this.videoBg) {
+      this.scene.remove(this.videoBg);
+      (this.videoBg.geometry as THREE.BufferGeometry)?.dispose();
+      (this.videoBg.material as THREE.Material)?.dispose();
+    }
+
+    this.videoTexture = new THREE.VideoTexture(video);
+    this.videoTexture.wrapS = THREE.RepeatWrapping;
+    this.videoTexture.wrapT = THREE.ClampToEdgeWrapping;
+    this.videoTexture.repeat.x = -1;
+    this.videoTexture.offset.x = 1;
+    this.videoTexture.colorSpace = THREE.SRGBColorSpace;
+
+    const aspect = this.canvas.clientWidth / this.canvas.clientHeight;
+    const geo = new THREE.PlaneGeometry(aspect * 2, 2);
+    const mat = new THREE.MeshBasicMaterial({
+      map: this.videoTexture,
+      transparent: true,
+      opacity: 0.5,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    this.videoBg = new THREE.Mesh(geo, mat);
+    this.videoBg.renderOrder = -1;
+    this.videoBg.position.z = -1;
+    this.scene.add(this.videoBg);
+  }
+
   private wireEvents(): void {
     this.cleanupFns.push(
       globalEventBus.on('hand_update', ({ hands }: { hands: HandSnapshot[] }) => {
@@ -76,6 +112,12 @@ export class SceneManager {
     this.cleanupFns.push(
       globalEventBus.on('stroke_added', (stroke: StrokeData) => {
         this.strokeRenderer?.addStroke(stroke);
+      }),
+    );
+
+    this.cleanupFns.push(
+      globalEventBus.on('stroke_update', (stroke: StrokeData) => {
+        this.strokeRenderer?.updateStroke(stroke);
       }),
     );
 
@@ -95,6 +137,13 @@ export class SceneManager {
           this.clearEffect?.trigger();
           this.strokeRenderer?.clear();
         }
+      }),
+    );
+
+    this.cleanupFns.push(
+      globalEventBus.on('clear_canvas', () => {
+        this.clearEffect?.trigger();
+        this.strokeRenderer?.clear();
       }),
     );
   }
@@ -143,12 +192,17 @@ export class SceneManager {
     this.renderer.setSize(width, height, false);
 
     const aspect = width / height;
-    const frustumSize = 2;
+    const frustumSize = 1;
     this.camera.left = -frustumSize * aspect;
     this.camera.right = frustumSize * aspect;
     this.camera.top = frustumSize;
     this.camera.bottom = -frustumSize;
     this.camera.updateProjectionMatrix();
+
+    if (this.videoBg) {
+      this.videoBg.geometry.dispose();
+      this.videoBg.geometry = new THREE.PlaneGeometry(aspect * 2, 2);
+    }
   }
 
   private setupResizeObserver(): void {
@@ -165,6 +219,17 @@ export class SceneManager {
     this.handOverlay?.destroy();
     this.gestureIndicator?.destroy();
     this.clearEffect?.destroy();
+
+    if (this.videoTexture) {
+      this.videoTexture.dispose();
+      this.videoTexture = null;
+    }
+    if (this.videoBg) {
+      this.scene?.remove(this.videoBg);
+      this.videoBg.geometry?.dispose();
+      (this.videoBg.material as THREE.Material)?.dispose();
+      this.videoBg = null;
+    }
 
     if (this.renderer) {
       this.renderer.dispose();

@@ -4,7 +4,7 @@ import { RENDER, Z_LAYERS } from '../core/constants';
 
 const GESTURE_COLORS: Record<string, string> = {
   idle: '#4a4a5a', drawing: '#4dabf7', color_select: '#ffd43b',
-  stop_drawing: '#ff6b6b', clear_canvas: '#69db7c', eraser: '#ffa94d', dual_hand: '#da77f2',
+  clear_canvas: '#69db7c', eraser: '#ffa94d',
 };
 
 export class GestureIndicator3D {

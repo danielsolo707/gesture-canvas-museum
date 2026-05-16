@@ -1,4 +1,5 @@
 import { GestureType, Handedness, GestureHand } from '../core/types';
+import { HandShapeMetrics } from './detectors/utils';
 
 export interface GestureResult {
   type: GestureType;
@@ -9,7 +10,7 @@ export interface GestureResult {
 
 export interface GestureDetector {
   readonly name: string;
-  detect(landmarks: Float32Array, handedness: Handedness): GestureResult | null;
+  detect(landmarks: Float32Array, handedness: Handedness, shape?: HandShapeMetrics): GestureResult | null;
   reset(): void;
 }
 

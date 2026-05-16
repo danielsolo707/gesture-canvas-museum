@@ -5,34 +5,91 @@ import { DrawingBuffer, hexToRgb, BufferGeometryData } from './DrawingBuffer';
 import { randomId } from '../utils/math';
 import { globalEventBus } from '../core/EventBus';
 
+const SPATIAL_CELL_SIZE = 0.03;
+
+function cellKey(x: number, y: number): string {
+  return `${Math.floor(x / SPATIAL_CELL_SIZE)}:${Math.floor(y / SPATIAL_CELL_SIZE)}`;
+}
+
+class EraserIndex {
+  private grid = new Map<string, Set<string>>();
+
+  insert(strokeId: string, points: StrokePoint[]): void {
+    if (points.length === 0) return;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const p of points) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.y > maxY) maxY = p.y;
+    }
+    const keys = new Set<string>();
+    for (let cx = Math.floor(minX / SPATIAL_CELL_SIZE); cx <= Math.floor(maxX / SPATIAL_CELL_SIZE); cx++) {
+      for (let cy = Math.floor(minY / SPATIAL_CELL_SIZE); cy <= Math.floor(maxY / SPATIAL_CELL_SIZE); cy++) {
+        keys.add(`${cx}:${cy}`);
+      }
+    }
+    for (const key of keys) {
+      let cell = this.grid.get(key);
+      if (!cell) { cell = new Set(); this.grid.set(key, cell); }
+      cell.add(strokeId);
+    }
+  }
+
+  query(x: number, y: number, radius: number): Set<string> {
+    const result = new Set<string>();
+    const r = Math.max(radius, SPATIAL_CELL_SIZE * 0.5);
+    for (let cx = Math.floor((x - r) / SPATIAL_CELL_SIZE); cx <= Math.floor((x + r) / SPATIAL_CELL_SIZE); cx++) {
+      for (let cy = Math.floor((y - r) / SPATIAL_CELL_SIZE); cy <= Math.floor((y + r) / SPATIAL_CELL_SIZE); cy++) {
+        const cell = this.grid.get(`${cx}:${cy}`);
+        if (cell) for (const id of cell) result.add(id);
+      }
+    }
+    return result;
+  }
+
+  remove(strokeId: string): void {
+    for (const cell of this.grid.values()) cell.delete(strokeId);
+  }
+
+  clear(): void {
+    this.grid.clear();
+  }
+}
+
 export class StrokeEngine {
   private strokes: Map<string, Stroke> = new Map();
   private completedStrokes: StrokeData[] = [];
   private undoStack: StrokeData[] = [];
-  private activeHands: Map<Handedness, Stroke | null> = new Map();
+  private activeHands: Map<string, Stroke> = new Map();
   private buffer: DrawingBuffer;
+  private eraserIndex = new EraserIndex();
   private _strokeCount = 0;
 
   constructor() {
     this.buffer = new DrawingBuffer();
-    this.activeHands.set('Left', null);
-    this.activeHands.set('Right', null);
   }
 
   initialize(): void {
     this.buffer.clear();
   }
 
-  startStroke(hand: Handedness, point: StrokePoint, color: string, width: number): Stroke {
-    const stroke = new Stroke(hand, color, width);
+  startStroke(
+    handKey: string,
+    point: StrokePoint,
+    color: string,
+    width: number,
+    handedness: Handedness = handKey === 'Left' ? 'Left' : 'Right',
+  ): Stroke {
+    const stroke = new Stroke(handedness, color, width);
     stroke.addPoint(point);
     this.strokes.set(stroke.id, stroke);
-    this.activeHands.set(hand, stroke);
+    this.activeHands.set(handKey, stroke);
     return stroke;
   }
 
-  extendStroke(hand: Handedness, point: StrokePoint): Stroke | null {
-    const active = this.activeHands.get(hand);
+  extendStroke(handKey: string, point: StrokePoint): Stroke | null {
+    const active = this.activeHands.get(handKey);
     if (!active) return null;
 
     const last = active.points[active.points.length - 1];
@@ -46,11 +103,11 @@ export class StrokeEngine {
     return active;
   }
 
-  endStroke(hand: Handedness): StrokeData | null {
-    const active = this.activeHands.get(hand);
+  endStroke(handKey: string): StrokeData | null {
+    const active = this.activeHands.get(handKey);
     if (!active) return null;
 
-    this.activeHands.set(hand, null);
+    this.activeHands.delete(handKey);
 
     if (active.points.length < 2) {
       this.strokes.delete(active.id);
@@ -59,6 +116,7 @@ export class StrokeEngine {
 
     const data = active.toData();
     this.completedStrokes.push(data);
+    this.eraserIndex.insert(data.id, data.points);
     this._strokeCount++;
     this.strokes.delete(active.id);
 
@@ -69,11 +127,11 @@ export class StrokeEngine {
     return data;
   }
 
-  cancelStroke(hand: Handedness): void {
-    const active = this.activeHands.get(hand);
+  cancelStroke(handKey: string): void {
+    const active = this.activeHands.get(handKey);
     if (active) {
       this.strokes.delete(active.id);
-      this.activeHands.set(hand, null);
+      this.activeHands.delete(handKey);
     }
   }
 
@@ -82,6 +140,7 @@ export class StrokeEngine {
     stroke.points = points;
     const data = stroke.toData();
     this.completedStrokes.push(data);
+    this.eraserIndex.insert(data.id, data.points);
     this._strokeCount++;
     return data;
   }
@@ -90,13 +149,21 @@ export class StrokeEngine {
     const idx = this.completedStrokes.findIndex((s) => s.id === strokeId);
     if (idx !== -1) {
       this.completedStrokes.splice(idx, 1);
+      this.eraserIndex.remove(strokeId);
       globalEventBus.emit('stroke_erased', { strokeId });
     }
   }
 
   eraseStrokesAtPoint(x: number, y: number, radius: number): string[] {
+    const candidates = this.eraserIndex.query(x, y, radius);
+    if (candidates.size === 0) return [];
+
     const erased: string[] = [];
+    const candidateSet = new Set(candidates);
+
     this.completedStrokes = this.completedStrokes.filter((s) => {
+      if (!candidateSet.has(s.id)) return true;
+
       for (const p of s.points) {
         const dx = p.x - x;
         const dy = p.y - y;
@@ -107,9 +174,12 @@ export class StrokeEngine {
       }
       return true;
     });
+
     for (const id of erased) {
+      this.eraserIndex.remove(id);
       globalEventBus.emit('stroke_erased', { strokeId: id });
     }
+
     return erased;
   }
 
@@ -117,7 +187,9 @@ export class StrokeEngine {
     const data = this.completedStrokes.pop();
     if (data) {
       this.undoStack.push(data);
+      this.eraserIndex.remove(data.id);
       this._strokeCount--;
+      globalEventBus.emit('stroke_erased', { strokeId: data.id });
       globalEventBus.emit('undo');
     }
     return data ?? null;
@@ -127,7 +199,9 @@ export class StrokeEngine {
     const data = this.undoStack.pop();
     if (data) {
       this.completedStrokes.push(data);
+      this.eraserIndex.insert(data.id, data.points);
       this._strokeCount++;
+      globalEventBus.emit('stroke_added', data);
     }
     return data ?? null;
   }
@@ -136,15 +210,15 @@ export class StrokeEngine {
     this.completedStrokes.length = 0;
     this.undoStack.length = 0;
     this.strokes.clear();
-    this.activeHands.set('Left', null);
-    this.activeHands.set('Right', null);
+    this.activeHands.clear();
+    this.eraserIndex.clear();
     this._strokeCount = 0;
     this.buffer.clear();
     globalEventBus.emit('clear_canvas');
   }
 
-  getActiveStroke(hand: Handedness): Stroke | null {
-    return this.activeHands.get(hand) ?? null;
+  getActiveStroke(handKey: string): Stroke | null {
+    return this.activeHands.get(handKey) ?? null;
   }
 
   getCompletedStrokes(): readonly StrokeData[] {
@@ -181,6 +255,7 @@ export class StrokeEngine {
     this.completedStrokes.length = 0;
     this.undoStack.length = 0;
     this.activeHands.clear();
+    this.eraserIndex.clear();
     this.buffer.destroy();
   }
 }

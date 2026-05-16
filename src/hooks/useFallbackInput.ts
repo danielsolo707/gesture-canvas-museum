@@ -15,9 +15,10 @@ export function useFallbackInput(engine: Engine | null) {
     const canvas = document.querySelector('canvas');
     if (!canvas) return { x: 0, y: 0, z: 0 };
     const rect = canvas.getBoundingClientRect();
-    const x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    const aspect = rect.width / rect.height;
+    const x = (((clientX - rect.left) / rect.width) * 2 - 1) * aspect;
     const y = -((clientY - rect.top) / rect.height) * 2 + 1;
-    return { x, y: -y, z: 0 };
+    return { x, y, z: 0 };
   }, []);
 
   useEffect(() => {
@@ -26,10 +27,11 @@ export function useFallbackInput(engine: Engine | null) {
     const strokeEngine = engine.getStrokeEngine();
 
     const onMouseDown = (e: MouseEvent) => {
+      if (!(e.target instanceof HTMLCanvasElement)) return;
       if (e.button === FALLBACK.DRAW_BUTTON) {
         const pt = getCanvasPoint(e.clientX, e.clientY);
         const state = useStore.getState();
-        strokeEngine.startStroke('Right', pt, state.color, 3);
+        strokeEngine.startStroke('Right', pt, state.color, state.strokeWidth);
         isDrawing.current = true;
         useStore.getState().setIsDrawing(true);
         globalEventBus.emit('gesture', {
@@ -44,7 +46,10 @@ export function useFallbackInput(engine: Engine | null) {
     const onMouseMove = (e: MouseEvent) => {
       if (isDrawing.current) {
         const pt = getCanvasPoint(e.clientX, e.clientY);
-        strokeEngine.extendStroke('Right', pt);
+        const stroke = strokeEngine.extendStroke('Right', pt);
+        if (stroke) {
+          globalEventBus.emit('stroke_update', stroke.toData());
+        }
       }
       if (isErasing.current) {
         const pt = getCanvasPoint(e.clientX, e.clientY);
@@ -54,7 +59,10 @@ export function useFallbackInput(engine: Engine | null) {
 
     const onMouseUp = (e: MouseEvent) => {
       if (e.button === FALLBACK.DRAW_BUTTON && isDrawing.current) {
-        strokeEngine.endStroke('Right');
+        const stroke = strokeEngine.endStroke('Right');
+        if (stroke) {
+          globalEventBus.emit('stroke_added', stroke);
+        }
         isDrawing.current = false;
         useStore.getState().setIsDrawing(false);
       }

@@ -1,49 +1,29 @@
 import { GestureDetector, GestureResult } from '../types';
-import { Handedness, LANDMARK_INDICES as L } from '../../core/types';
+import { Handedness } from '../../core/types';
+import { GESTURE } from '../../core/constants';
+import { HandShapeMetrics } from './utils';
 
 export class ClearCanvasDetector implements GestureDetector {
   readonly name = 'clear_canvas';
 
-  detect(landmarks: Float32Array, handedness: Handedness): GestureResult | null {
-    const tips = [
-      getLandmark(landmarks, L.THUMB_TIP),
-      getLandmark(landmarks, L.INDEX_TIP),
-      getLandmark(landmarks, L.MIDDLE_TIP),
-      getLandmark(landmarks, L.RING_TIP),
-      getLandmark(landmarks, L.PINKY_TIP),
-    ];
+  detect(_landmarks: Float32Array, handedness: Handedness, shape?: HandShapeMetrics): GestureResult | null {
+    if (!shape) return null;
 
-    const mcp = [
-      getLandmark(landmarks, L.THUMB_MCP),
-      getLandmark(landmarks, L.INDEX_MCP),
-      getLandmark(landmarks, L.MIDDLE_MCP),
-      getLandmark(landmarks, L.RING_MCP),
-      getLandmark(landmarks, L.PINKY_MCP),
-    ];
+    const a = shape.fingerAngles;
+    const ha = shape.hexAreas;
 
-    let extendedCount = 0;
-    for (let i = 0; i < 5; i++) {
-      const dTip = distance2D(tips[i][0], tips[i][1], mcp[i][0], mcp[i][1]);
-      const threshold = i === 0 ? 0.12 : 0.1;
-      if (dTip > threshold) extendedCount++;
-    }
+    const allCurled =
+      a.index > GESTURE.FINGER_ANGLE_CURLED_MIN &&
+      a.middle > GESTURE.FINGER_ANGLE_CURLED_MIN &&
+      a.ring > GESTURE.FINGER_ANGLE_CURLED_MIN &&
+      a.pinky > GESTURE.FINGER_ANGLE_CURLED_MIN;
 
-    if (extendedCount === 5) {
-      return { type: 'clear_canvas', hand: handedness, confidence: 0.7 };
-    }
+    if (!allCurled) return null;
 
-    return null;
+    const compactPalm = ha.ab < 0.03 && ha.bc < 0.03;
+
+    return { type: 'clear_canvas', hand: handedness, confidence: compactPalm ? 0.9 : 0.75 };
   }
 
   reset(): void {}
-}
-
-function getLandmark(landmarks: Float32Array, index: number): [number, number, number] {
-  const i = index * 3;
-  return [landmarks[i], landmarks[i + 1], landmarks[i + 2]];
-}
-
-function distance2D(x1: number, y1: number, x2: number, y2: number): number {
-  const dx = x2 - x1, dy = y2 - y1;
-  return Math.sqrt(dx * dx + dy * dy);
 }

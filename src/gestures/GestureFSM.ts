@@ -16,16 +16,16 @@ export class GestureFSM {
       { from: 'idle', to: 'drawing', condition: () => true, cooldownMs: GESTURE.COOLDOWN_MS },
       { from: 'idle', to: 'eraser', condition: () => true, cooldownMs: GESTURE.COOLDOWN_MS },
       { from: 'idle', to: 'color_select', condition: () => true, cooldownMs: GESTURE.COOLDOWN_MS },
-      { from: 'drawing', to: 'stop_drawing', condition: () => true, cooldownMs: GESTURE.COOLDOWN_MS },
       { from: 'drawing', to: 'eraser', condition: () => true, cooldownMs: GESTURE.COOLDOWN_MS },
+      { from: 'drawing', to: 'color_select', condition: () => true, cooldownMs: GESTURE.COOLDOWN_MS },
       { from: 'drawing', to: 'idle', condition: () => true, cooldownMs: GESTURE.COOLDOWN_MS },
+      { from: 'eraser', to: 'drawing', condition: () => true, cooldownMs: GESTURE.COOLDOWN_MS },
       { from: 'eraser', to: 'idle', condition: () => true, cooldownMs: GESTURE.COOLDOWN_MS },
-      { from: 'eraser', to: 'stop_drawing', condition: () => true, cooldownMs: GESTURE.COOLDOWN_MS },
+      { from: 'eraser', to: 'color_select', condition: () => true, cooldownMs: GESTURE.COOLDOWN_MS },
+      { from: 'color_select', to: 'drawing', condition: () => true, cooldownMs: GESTURE.COOLDOWN_MS },
+      { from: 'color_select', to: 'eraser', condition: () => true, cooldownMs: GESTURE.COOLDOWN_MS },
       { from: 'color_select', to: 'idle', condition: () => true, cooldownMs: GESTURE.COOLDOWN_MS },
-      { from: 'stop_drawing', to: 'idle', condition: () => true, cooldownMs: GESTURE.COOLDOWN_MS },
       { from: 'clear_canvas', to: 'idle', condition: () => true, cooldownMs: 1000 },
-      { from: 'dual_hand', to: 'idle', condition: () => true, cooldownMs: GESTURE.COOLDOWN_MS },
-      { from: 'dual_hand', to: 'drawing', condition: () => true, cooldownMs: GESTURE.COOLDOWN_MS },
     ];
   }
 

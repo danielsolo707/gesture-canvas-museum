@@ -27,21 +27,29 @@ export const LANDMARKS_FLOAT_SIZE = NUM_LANDMARKS * 3;
 
 export type Handedness = 'Left' | 'Right';
 
+export interface HandGestureInfo {
+  isFist?: boolean;
+  isPointing?: boolean;
+  isOpenPalm?: boolean;
+  isPeace?: boolean;
+  isThreeFinger?: boolean;
+}
+
 export interface HandSnapshot {
   landmarks: Float32Array;
   handedness: Handedness;
   confidence: number;
   timestamp: number;
+  gesture?: HandGestureInfo;
+  indexTip?: { x: number; y: number } | null;
 }
 
 export type GestureType =
   | 'idle'
   | 'drawing'
   | 'color_select'
-  | 'stop_drawing'
   | 'clear_canvas'
-  | 'eraser'
-  | 'dual_hand';
+  | 'eraser';
 
 export interface GestureEvent {
   type: GestureType;

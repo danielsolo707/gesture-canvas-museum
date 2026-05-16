@@ -7,6 +7,7 @@ export interface EventMap {
   error: Error;
   clear_canvas: void;
   stroke_added: import('./types').StrokeData;
+  stroke_update: import('./types').StrokeData;
   stroke_erased: { strokeId: string };
   undo: void;
   fps_update: number;

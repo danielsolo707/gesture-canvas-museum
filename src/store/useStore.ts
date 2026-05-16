@@ -41,6 +41,7 @@ export interface AppStore {
   engineState: EngineState;
   mode: EngineMode;
   showToolbar: boolean;
+  colorPaletteActive: boolean;
   showPerformance: boolean;
   webcamReady: boolean;
   webcamError: string | null;
@@ -49,6 +50,7 @@ export interface AppStore {
   setWebcamReady: (ready: boolean) => void;
   setWebcamError: (error: string | null) => void;
   toggleToolbar: () => void;
+  setColorPaletteActive: (active: boolean) => void;
   togglePerformance: () => void;
 
   color: string;
@@ -56,10 +58,15 @@ export interface AppStore {
   eraserSize: number;
   palette: readonly string[];
   selectedPaletteIndex: number;
+  colorHoverIndex: number | null;
+  cursorX: number | null;
+  cursorY: number | null;
   setColor: (color: string) => void;
   setStrokeWidth: (width: number) => void;
   setEraserSize: (size: number) => void;
   selectPaletteIndex: (index: number) => void;
+  setColorHoverIndex: (index: number | null) => void;
+  setCursor: (x: number | null, y: number | null) => void;
 }
 
 export const useStore = create<AppStore>()((set, get) => ({
@@ -101,6 +108,7 @@ export const useStore = create<AppStore>()((set, get) => ({
   engineState: 'uninitialized',
   mode: 'camera',
   showToolbar: true,
+  colorPaletteActive: false,
   showPerformance: false,
   webcamReady: false,
   webcamError: null,
@@ -109,6 +117,7 @@ export const useStore = create<AppStore>()((set, get) => ({
   setWebcamReady: (webcamReady) => set({ webcamReady, webcamError: webcamReady ? null : null }),
   setWebcamError: (webcamError) => set({ webcamError, webcamReady: false }),
   toggleToolbar: () => set((s) => ({ showToolbar: !s.showToolbar })),
+  setColorPaletteActive: (colorPaletteActive) => set({ colorPaletteActive }),
   togglePerformance: () => set((s) => ({ showPerformance: !s.showPerformance })),
 
   color: PALETTE_HEXES[0],
@@ -116,11 +125,16 @@ export const useStore = create<AppStore>()((set, get) => ({
   eraserSize: 10,
   palette: PALETTE_HEXES,
   selectedPaletteIndex: 0,
+  colorHoverIndex: null,
+  cursorX: null,
+  cursorY: null,
   setColor: (color) => set({ color }),
   setStrokeWidth: (strokeWidth) => set({ strokeWidth }),
   setEraserSize: (eraserSize) => set({ eraserSize }),
   selectPaletteIndex: (selectedPaletteIndex) =>
     set({ selectedPaletteIndex, color: PALETTE_HEXES[selectedPaletteIndex] }),
+  setColorHoverIndex: (colorHoverIndex) => set({ colorHoverIndex }),
+  setCursor: (cursorX, cursorY) => set({ cursorX, cursorY }),
 }));
 
 export function getStore(): AppStore {

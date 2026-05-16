@@ -1,4 +1,3 @@
-import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './ui/App';
 import { logger } from './utils/logging';
@@ -12,7 +11,5 @@ if (!rootElement) {
 logger.info('Gesture Canvas mounting...');
 
 createRoot(rootElement).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
+  <App />,
 );

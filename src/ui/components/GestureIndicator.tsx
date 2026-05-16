@@ -4,10 +4,8 @@ const GESTURE_LABELS: Record<string, string> = {
   idle: 'Waiting',
   drawing: 'Drawing',
   color_select: 'Color Select',
-  stop_drawing: 'Paused',
   clear_canvas: 'Clear Canvas',
   eraser: 'Eraser',
-  dual_hand: 'Dual Hands',
 };
 
 export function GestureIndicator() {
