@@ -5,11 +5,11 @@ Museum-grade interactive gesture drawing system. Visitors draw in the air using 
 ## Features
 
 - Air drawing with index-finger tracking
-- Simultaneous two-hand detection
-- Gesture controls for draw, eraser, color cycle, stop, clear, and dual-hand mode
+- **Depth-of-field filtering** — only the hand closest to the camera is tracked, background visitors are ignored
+- Gesture persistence — brief tracking interruptions (up to 1.5s) don't break the active gesture
 - Three.js ribbon rendering for colorful strokes
 - Mouse fallback for testing without webcam tracking
-- Local CPU-only MediaPipe hand tracking
+- Local CPU-only MediaPipe hand tracking (Web Worker with main-thread fallback)
 - Debug log panel and Playwright camera diagnostic
 
 ## Offline Museum Run
@@ -63,12 +63,10 @@ npm run diagnose:camera
 
 | Gesture | Action |
 | --- | --- |
-| Index finger extended | Draw |
-| Index + middle extended | Erase |
-| Index + middle + ring extended | Cycle color |
-| Closed fist | Stop drawing |
-| Open palm held | Clear canvas |
-| Two drawing hands | Dual-hand drawing |
+| Index finger extended, others curled | Draw |
+| Index + middle extended (peace sign) | Erase |
+| Open palm (all 5 fingers extended) | Color select |
+| Closed fist (all fingers curled) | Clear canvas (hold 2s) |
 
 ### Fallback Mode
 
@@ -79,27 +77,49 @@ npm run diagnose:camera
 | `X` | Clear canvas |
 | `Ctrl+Z` | Undo |
 
+## Depth-of-Field
+
+The system tracks only the hand closest to the camera by measuring the wrist-to-middle-MCP distance in normalized landmark space. Hands below a minimum size threshold (0.07) are rejected entirely. This prevents visitors passing behind the active user from interfering.
+
+When the tracked hand is briefly lost or uncertain, the last confirmed gesture is held for 1.5 seconds (per-hand latch) and the debouncer requires 5 consistent deactivation frames before releasing.
+
 ## Architecture
 
 ```text
 src/
   core/       Engine, EventBus, Pipeline, types
-  tracking/   WebcamManager, direct local MediaPipe HandTracker
-  gestures/   Gesture detectors, FSM, debouncer
+  tracking/   WebcamManager, MediaPipe via Web Worker (fallback to main thread)
+  gestures/   Gesture detectors, FSM, per-hand debouncer + gesture latch
   drawing/    StrokeEngine, Stroke, drawing buffer
   rendering/  Three.js scene, stroke renderer, hand overlay
   features/   Color engine, eraser, canvas history
+  smoothing/  OneEuroFilter applied to all 63 landmark coordinates
   store/      Flat Zustand store
   hooks/      React hooks
   ui/         React components and styles
+  workers/    tracking.worker.ts (MediaPipe HandLandmarker in worker thread)
   utils/      Math, logger, kiosk helpers
+```
+
+### Pipeline
+
+```
+Webcam → mirror canvas → MediaPipe HandLandmarker (worker) → raw landmarks
+  → OneEuroFilter (minCutoff=0.4, beta=0.06, dCutoff=0.7)
+  → depth-of-field filter (closest hand only)
+  → HandShapeMetrics (finger angles, extension scores, hex asymmetry)
+  → gesture detectors compete (highest confidence wins)
+  → per-hand debouncer (5-frame activation/deactivation)
+  → per-hand gesture latch (1.5s hold on brief loss)
+  → EventBus → Engine processes (draw/erase/color/clear)
 ```
 
 ## Key Design Decisions
 
 - Engine runs outside React in its own `requestAnimationFrame` loop.
-- MediaPipe is loaded locally and runs CPU-only.
-- No worker is used.
+- MediaPipe is loaded locally and runs CPU-only (Web Worker with main-thread fallback).
+- OneEuroFilter smooths all 63 landmark coordinates per hand per frame.
+- Per-hand gesture latch prevents flicker during brief tracking loss.
 - All Three.js disposal is explicit.
 - Zustand store stays flat.
 
