@@ -12,7 +12,7 @@ type HandLandmarkerInstance = {
 };
 
 function getLocalWasmBaseUrl(): string {
-  return new URL('/tasks-vision/wasm/', window.location.origin).href;
+  return new URL(`${import.meta.env.BASE_URL}tasks-vision/wasm/`, window.location.origin).href;
 }
 
 export class HandTracker {

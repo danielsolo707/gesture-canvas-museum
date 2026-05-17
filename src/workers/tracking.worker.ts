@@ -12,7 +12,7 @@ async function initLandmarker(): Promise<void> {
 
   initPromise = (async () => {
     const { HandLandmarker, FilesetResolver } = await import('@mediapipe/tasks-vision');
-    const wasmBase = new URL('/tasks-vision/wasm/', self.location.origin).href;
+    const wasmBase = new URL(`${import.meta.env.BASE_URL}tasks-vision/wasm/`, self.location.origin).href;
     const vision = await FilesetResolver.forVisionTasks(wasmBase, false);
 
     landmarker = await HandLandmarker.createFromOptions(vision, {

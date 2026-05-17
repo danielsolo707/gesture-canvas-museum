@@ -30,6 +30,12 @@ jobs:
 
       - run: npm ci
 
+      - name: Download MediaPipe hand model
+        run: |
+          mkdir -p public/models
+          curl -L -o public/models/hand_landmarker.task \
+            https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task
+
       - run: npm run copy-mediapipe
 
       - run: npx tsc -b

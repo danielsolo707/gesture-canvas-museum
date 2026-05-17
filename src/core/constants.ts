@@ -12,7 +12,7 @@ export const INFERENCE = {
   MAX_HANDS: 2,
   MIN_HAND_DETECTION_CONFIDENCE: 0.55,
   MIN_HAND_TRACKING_CONFIDENCE: 0.45,
-  MODEL_PATH: '/models/hand_landmarker.task',
+  MODEL_PATH: `${import.meta.env.BASE_URL}models/hand_landmarker.task`,
   DELEGATE: 'CPU' as const,
   MIN_INTERVAL_MS: 0,
   CACHED_HAND_MAX_AGE_MS: 260,
