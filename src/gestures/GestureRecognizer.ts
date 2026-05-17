@@ -25,6 +25,8 @@ export class GestureRecognizer {
   private debouncer: GestureDebouncer;
   private gestureCooldowns: Map<string, number> = new Map();
 
+  private latched: Map<Handedness, { type: GestureType; since: number }> = new Map();
+
   constructor() {
     this.fsm = new GestureFSM();
     this.debouncer = new GestureDebouncer(
@@ -75,6 +77,7 @@ export class GestureRecognizer {
         if (now - lastFired >= GESTURE.COOLDOWN_MS) {
           const newState = this.fsm.transition(activeGesture, now);
           if (newState === activeGesture) {
+            this.latched.set(hand.handedness, { type: activeGesture, since: now });
             events.push({
               type: activeGesture,
               hand: hand.handedness,
@@ -87,9 +90,20 @@ export class GestureRecognizer {
         }
       }
 
+      let finalType = activeGesture;
+
+      if (activeGesture !== null) {
+        this.latched.set(hand.handedness, { type: activeGesture, since: now });
+      } else {
+        const entry = this.latched.get(hand.handedness);
+        if (entry && now - entry.since < GESTURE.GESTURE_LATCH_TIMEOUT_MS) {
+          finalType = entry.type;
+        }
+      }
+
       handStates.set(hand.handedness, {
-        type: activeGesture,
-        confidence: bestResult?.confidence ?? 0,
+        type: finalType,
+        confidence: finalType !== null ? Math.max(bestResult?.confidence ?? 0.4, 0.4) : 0,
       });
     }
 
@@ -132,5 +146,6 @@ export class GestureRecognizer {
     this.fsm.destroy();
     this.debouncer.destroy();
     this.gestureCooldowns.clear();
+    this.latched.clear();
   }
 }

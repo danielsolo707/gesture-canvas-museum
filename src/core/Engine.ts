@@ -9,6 +9,7 @@ import { ColorEngine } from '../features/colors/ColorEngine';
 import { SceneManager } from '../rendering/SceneManager';
 import { useStore } from '../store/useStore';
 import { logger } from '../utils/logging';
+import { getLandmark as getLm, distance3D } from '../gestures/detectors/utils';
 
 export interface EngineConfig {
   canvas: HTMLCanvasElement;
@@ -170,6 +171,16 @@ export class Engine {
       hands = [];
     }
     this._stats.inferenceMs = performance.now() - t0;
+
+    // Depth-of-field: only accept the hand closest to camera, reject background hands
+    if (hands.length > 0) {
+      hands = hands.filter((h) => computeHandScale(h.landmarks) >= 0.07);
+      if (hands.length > 1) {
+        hands.sort((a, b) => computeHandScale(b.landmarks) - computeHandScale(a.landmarks));
+        hands = [hands[0]];
+      }
+    }
+
     this.bus.emit('hand_update', { hands });
 
     if (hands.length > 0) {
@@ -390,4 +401,11 @@ function getHandCenterX(hand: HandSnapshot): number {
     count++;
   }
   return count > 0 ? total / count : 0.5;
+}
+
+function computeHandScale(landmarks: Float32Array): number {
+  const wrist = getLm(landmarks, 0);
+  const middleMcp = getLm(landmarks, 9);
+  const d = distance3D(wrist[0], wrist[1], wrist[2], middleMcp[0], middleMcp[1], middleMcp[2]);
+  return Math.max(d, 0.01);
 }
