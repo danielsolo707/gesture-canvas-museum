@@ -127,6 +127,14 @@ export class StrokeEngine {
     return data;
   }
 
+  migrateStrokeKey(oldKey: string, newKey: string): void {
+    const stroke = this.activeHands.get(oldKey);
+    if (stroke) {
+      this.activeHands.set(newKey, stroke);
+      this.activeHands.delete(oldKey);
+    }
+  }
+
   cancelStroke(handKey: string): void {
     const active = this.activeHands.get(handKey);
     if (active) {

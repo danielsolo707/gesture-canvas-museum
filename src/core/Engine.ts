@@ -268,8 +268,13 @@ export class Engine {
         }
 
         // Step 3: Pass actual gesture + confidence to freeze controller (FIX: was 'idle'/0)
+        // Confidence floor: when integrity >= 0.6 (hand well-tracked), ensure
+        // freeze can always clear by providing at least 0.5 confidence
+        const freezeConfidence = (integrity?.score ?? 0) >= 0.6
+          ? Math.max(primaryConfidence, 0.5)
+          : primaryConfidence;
         const freezeState = this.freezeController.update(
-          primaryGesture ?? 'idle', primaryConfidence,
+          primaryGesture ?? 'idle', freezeConfidence,
           integrity ?? this.zeroIntegrity(),
           edgeProx ?? this.zeroEdgeProx(), now,
         );
@@ -292,6 +297,8 @@ export class Engine {
           this._stats.trackingStability = result.pipelineDebug.trackingStability;
           this._stats.intentConfidence = result.pipelineDebug.intentScore;
         }
+
+        this.lastFreezeState = freezeState;
 
         const effectiveGesture = freezeState.frozen ? freezeState.lastStableGesture : (primaryGesture ?? 'idle');
         const effectiveConfidence = freezeState.frozen ? freezeState.lastStableConfidence : primaryConfidence;
@@ -340,9 +347,21 @@ export class Engine {
 
         for (let i = 0; i < sortedHands.length; i++) {
           const hand = sortedHands[i];
-          const handKey = getHandKey(hand, i);
+          let handKey = getHandKey(hand, i);
           const point = getDrawingPoint(hand.landmarks, this.config.canvas);
           if (!point) continue;
+
+          // During freeze recovery, the hand may return with different handedness,
+          // which changes handKey. Migrate the existing stroke to the new key so
+          // the original stroke continues instead of creating a phantom new one.
+          if (freezeState.frozen && !this.activeDrawHands.has(handKey) && this.activeDrawHands.size > 0) {
+            const oldKey = this.activeDrawHands.values().next().value;
+            if (oldKey !== undefined) {
+              this.activeDrawHands.delete(oldKey);
+              this.activeDrawHands.add(handKey);
+              this.drawing.migrateStrokeKey(oldKey, handKey);
+            }
+          }
 
           const handState = result.handStates.get(hand.handedness);
           const gestureType = freezeState.frozen ? freezeState.lastStableGesture : (handState?.type ?? null);
@@ -616,9 +635,8 @@ export class Engine {
         }
         this.lastStrokeUpdate = now;
       }
-    } else {
-      this.endActiveStroke(handKey);
     }
+    // else atTop: skip frame — don't end stroke, so it resumes cleanly when finger returns
   }
 
   private deactivatePalette(): void {

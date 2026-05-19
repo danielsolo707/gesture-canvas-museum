@@ -37,7 +37,6 @@ export function useEngine() {
     });
 
     const unsubHands = globalEventBus.on('hand_update', ({ hands }: { hands: HandSnapshot[] }) => {
-      kioskRef.current?.recordActivity();
       lastHandUpdateRef.current = Date.now();
       useStore.getState().setHands(
         hands.map((hand) => ({
@@ -54,6 +53,7 @@ export function useEngine() {
     });
 
     const unsubGesture = globalEventBus.on('gesture', (event: GestureEvent) => {
+      kioskRef.current?.recordActivity();
       useStore.getState().setGesture(event.type, event.hand as 'Left' | 'Right', event.confidence);
     });
 

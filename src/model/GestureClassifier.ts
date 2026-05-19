@@ -182,6 +182,15 @@ export class GestureClassifier {
 
       this.updateStateMachine(sm, finalGesture, finalConfidence, now, extraFrames);
 
+      // When freeze override is active, force state machine to match frozen gesture
+      // so deactivation from the first (non-freeze) recognize call is undone.
+      if (freezeState?.frozen && sm.current !== freezeState.lastStableGesture) {
+        sm.current = freezeState.lastStableGesture;
+        sm.confidence = Math.max(sm.confidence, 0.4);
+        sm.activationCount = 0;
+        sm.deactivationCount = 0;
+      }
+
       // Step 9: Event emission with edge-aware cooldown
       const cooldownKey = `${hand.handedness}:${finalGesture}`;
       const lastFired = this.gestureCooldowns.get(cooldownKey) ?? 0;
