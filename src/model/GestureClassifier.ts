@@ -259,8 +259,8 @@ export class GestureClassifier {
     if (detected === sm.current) {
       sm.stableCount = Math.min(sm.stableCount + 1, 60);
       sm.confidence = sm.confidence + 0.3 * (confidence - sm.confidence);
-      sm.activationCount = 0;
       if (confidence >= 0.5) {
+        sm.activationCount = 0;
         sm.deactivationCount = 0;
       }
     } else {
