@@ -1,4 +1,4 @@
-import { GestureType, GestureEvent, HandSnapshot, Handedness } from '../core/types';
+import { GestureType, GestureEvent, HandSnapshot, Handedness, HandIntegrity, EdgeProximityInfo, GestureFreezeState } from '../core/types';
 import { GestureClassifier, GesturePipelineResult } from '../model/GestureClassifier';
 
 export interface HandGestureState {
@@ -24,8 +24,14 @@ export class GestureRecognizer {
     this.classifier.initialize();
   }
 
-  recognize(hands: HandSnapshot[], now: number): RecognizeResult {
-    const pipelineResult = this.classifier.process(hands, now);
+  recognize(
+    hands: HandSnapshot[],
+    now: number,
+    integrity?: HandIntegrity | null,
+    edgeProx?: EdgeProximityInfo | null,
+    freezeState?: GestureFreezeState | null,
+  ): RecognizeResult {
+    const pipelineResult = this.classifier.process(hands, now, integrity, edgeProx, freezeState);
 
     const handStates = new Map<Handedness, HandGestureState>();
     for (const [hand, state] of pipelineResult.handStates) {
@@ -45,14 +51,6 @@ export class GestureRecognizer {
 
   getCurrentGesture(): GestureType {
     return 'idle';
-  }
-
-  getClassifier(): GestureClassifier {
-    return this.classifier;
-  }
-
-  getCalibrationModule() {
-    return this.classifier.getCalibrationModule();
   }
 
   destroy(): void {

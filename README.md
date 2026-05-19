@@ -93,7 +93,7 @@ Museum-grade interactive gesture drawing system. Visitors draw in the air using 
 ### Deleted (Dead Code Cleanup)
 
 | Removed File | Reason |
-|---|---|
+|---|---|---|
 | `GestureDebouncer.ts` | Replaced by simpler state machine |
 | `GestureFSM.ts` | Logic moved into GestureClassifier |
 | `detectors/ClearCanvasDetector.ts` | clear_canvas gesture removed |
@@ -106,6 +106,8 @@ Museum-grade interactive gesture drawing system. Visitors draw in the air using 
 | `GestureIndicator3D.ts` | Dead code |
 | `HandOverlay.tsx` | Performance optimization |
 | `smoothing/types.ts` | Dead code |
+| `IntentLayer.ts` | Bypassed — replaced by direct heuristic + hysteresis state machine |
+| `CalibrationModule.ts` | Disabled — position-dependent scaling caused landmark distortion |
 
 ### Performance Summary
 
@@ -183,8 +185,10 @@ npm run diagnose:camera
 ```text
 src/
   core/       Engine, EventBus, Pipeline, types, constants
-  tracking/   WebcamManager, HandTracker, LandmarkNormalizer
-  model/      GestureClassifier, FeatureExtractor, IntentLayer, AdaptiveThresholds
+  tracking/   WebcamManager, HandTracker, LandmarkNormalizer,
+              HandIntegrityValidator, EdgeProximityDetector,
+              GestureFreezeController, SafeInteractionZoneMapper
+  model/      GestureClassifier, FeatureExtractor, AdaptiveThresholds
   drawing/    StrokeEngine, Stroke, drawing buffer
   rendering/  Three.js scene, StrokeRenderer
   features/   ColorEngine, ColorPalette

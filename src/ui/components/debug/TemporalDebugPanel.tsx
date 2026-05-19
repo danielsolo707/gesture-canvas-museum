@@ -1,5 +1,11 @@
 import { useStore } from '../../../store/useStore';
 
+function healthColor(value: number): string {
+  if (value >= 0.7) return '#0f0';
+  if (value >= 0.4) return '#ff0';
+  return '#f00';
+}
+
 export function TemporalDebugPanel() {
   const showDebug = useStore((s) => s.showDebug);
   const gestureDebug = useStore((s) => s.gestureDebug);
@@ -9,11 +15,19 @@ export function TemporalDebugPanel() {
   const cursorMode = useStore((s) => s.cursorMode);
   const colorPaletteActive = useStore((s) => s.colorPaletteActive);
 
+  const handIntegrity = useStore((s) => s.handIntegrity);
+  const edgeProximity = useStore((s) => s.edgeProximity);
+  const gestureFrozen = useStore((s) => s.gestureFrozen);
+  const freezeActive = useStore((s) => s.freezeActive);
+  const predictionActive = useStore((s) => s.predictionActive);
+  const safeZoneActive = useStore((s) => s.safeZoneActive);
+  const extrapolating = useStore((s) => s.extrapolating);
+
   if (!showDebug) return null;
 
   return (
     <div className="debug-panel" style={{
-      position: 'absolute', top: 8, right: 8, width: 320,
+      position: 'absolute', top: 8, right: 8, width: 340,
       background: 'rgba(0,0,0,0.88)', color: '#0f0',
       fontFamily: 'monospace', fontSize: 11, padding: 12, borderRadius: 8,
       zIndex: 200, pointerEvents: 'auto', userSelect: 'text',
@@ -26,7 +40,7 @@ export function TemporalDebugPanel() {
       <div style={{ marginBottom: 4, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <span>State: <span style={{ color: engineState === 'running' ? '#0f0' : '#ff0' }}>{engineState}</span></span>
         <span>Gesture: <span style={{ color: '#0ff' }}>{currentGesture}</span></span>
-        <span>Conf: <span style={{ color: '#0f0' }}>{(gestureConfidence * 100).toFixed(0)}%</span></span>
+        <span>Conf: <span style={{ color: healthColor(gestureConfidence) }}>{(gestureConfidence * 100).toFixed(0)}%</span></span>
       </div>
 
       <div style={{ marginBottom: 4, display: 'flex', gap: 8, flexWrap: 'wrap', color: '#aaa' }}>
@@ -34,21 +48,34 @@ export function TemporalDebugPanel() {
         <span>Palette: <span style={{ color: colorPaletteActive ? '#ffd43b' : '#666' }}>{colorPaletteActive ? 'active' : 'off'}</span></span>
       </div>
 
+      <div style={{ marginBottom: 4, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <span>Integrity: <span style={{ color: healthColor(handIntegrity) }}>{(handIntegrity * 100).toFixed(0)}%</span></span>
+        <span>Edge: <span style={{ color: edgeProximity > 0.5 ? '#f00' : edgeProximity > 0.3 ? '#ff0' : '#0f0' }}>{(edgeProximity * 100).toFixed(0)}%</span></span>
+      </div>
+
+      <div style={{ marginBottom: 4, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <span>Freeze: <span style={{ color: gestureFrozen ? '#ff0' : '#666' }}>{gestureFrozen ? 'FROZEN' : 'no'}</span></span>
+        {freezeActive && <span style={{ color: '#ffd43b' }}>ACTIVE</span>}
+        {predictionActive && <span style={{ color: '#0ff' }}>PREDICT</span>}
+        {safeZoneActive && <span style={{ color: '#0ff' }}>SAFEZN</span>}
+        {extrapolating && <span style={{ color: '#ff0' }}>EXTRAP</span>}
+      </div>
+
       {gestureDebug && (
         <>
-          <div style={{ color: '#888' }}>
-            Gesture: {gestureDebug.activeGesture} | Conf: {(gestureDebug.gestureConfidence * 100).toFixed(0)}%
+          <div style={{ color: '#888', borderTop: '1px solid rgba(255,255,255,0.1)', marginTop: 4, paddingTop: 4 }}>
+            {gestureDebug.activeGesture} | {(gestureDebug.gestureConfidence * 100).toFixed(0)}%
           </div>
           <div style={{ color: '#888' }}>
             Speed: {gestureDebug.motionSpeed.toFixed(3)}
             {gestureDebug.trackingStability !== undefined && (
-              <> | Stability: {(gestureDebug.trackingStability * 100).toFixed(0)}%</>
+              <> | Stable: {(gestureDebug.trackingStability * 100).toFixed(0)}%</>
             )}
           </div>
           <div style={{ color: '#888' }}>
             Intent: {(gestureDebug.intentScore * 100).toFixed(0)}%
             {gestureDebug.dynamicThreshold !== undefined && (
-              <> | DynThresh: {(gestureDebug.dynamicThreshold * 100).toFixed(0)}%</>
+              <> | Dyn: {(gestureDebug.dynamicThreshold * 100).toFixed(0)}%</>
             )}
           </div>
         </>

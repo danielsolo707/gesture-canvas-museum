@@ -1,5 +1,5 @@
-import { EngineState, EngineMode, EngineStats, StrokePoint, HandSnapshot, GestureType, GestureDebugInfo, CursorState, Action } from './types';
-import { PERFORMANCE, GESTURE, INTERACTION, RENDER } from './constants';
+import { EngineState, EngineMode, EngineStats, StrokePoint, HandSnapshot, GestureType, GestureDebugInfo, CursorState, Action, HandIntegrity, EdgeProximityInfo, GestureFreezeState } from './types';
+import { PERFORMANCE, GESTURE, INTERACTION, RENDER, FREEZE } from './constants';
 import { EventBus, globalEventBus } from './EventBus';
 import { GestureActionMapper } from './GestureActionMapper';
 import { WebcamManager } from '../tracking/WebcamManager';
@@ -8,6 +8,10 @@ import { GestureRecognizer } from '../gestures/GestureRecognizer';
 import { StrokeEngine } from '../drawing/StrokeEngine';
 import { ColorEngine } from '../features/colors/ColorEngine';
 import { SceneManager } from '../rendering/SceneManager';
+import { PredictiveCursor } from '../utils/PredictiveCursor';
+import { EdgeProximityDetector } from '../tracking/EdgeProximityDetector';
+import { GestureFreezeController } from '../tracking/GestureFreezeController';
+import { SafeInteractionZoneMapper } from '../tracking/SafeInteractionZoneMapper';
 import { useStore } from '../store/useStore';
 import { logger } from '../utils/logging';
 import { getLandmark as getLm, distance3D } from '../utils/math';
@@ -62,6 +66,17 @@ export class Engine {
   private attractTimer = 0;
   private idleFadeTimer = 0;
 
+  private edgeDetector: EdgeProximityDetector;
+  private freezeController: GestureFreezeController;
+  private safeZoneMapper: SafeInteractionZoneMapper;
+  private predictiveCursor: PredictiveCursor;
+
+  private lastIntegrity: HandIntegrity | null = null;
+  private lastEdgeProx: EdgeProximityInfo | null = null;
+  private lastFreezeState: GestureFreezeState | null = null;
+  private cursorFadeTimer = 0;
+  private freezePredictedPos: { x: number; y: number } | null = null;
+
   constructor(config: EngineConfig) {
     this.config = config;
     this.mode = config.mode ?? 'camera';
@@ -73,6 +88,10 @@ export class Engine {
     this.drawing = new StrokeEngine();
     this.colorEngine = new ColorEngine();
     this.scene = new SceneManager(config.canvas);
+    this.edgeDetector = new EdgeProximityDetector();
+    this.freezeController = new GestureFreezeController();
+    this.safeZoneMapper = new SafeInteractionZoneMapper();
+    this.predictiveCursor = new PredictiveCursor();
   }
 
   getStats(): Readonly<EngineStats> { return this._stats; }
@@ -139,6 +158,7 @@ export class Engine {
     this.drawing.destroy();
     this.scene.destroy();
     this.bus.removeAll();
+    this.freezeController.reset();
     this.setState('uninitialized');
   }
 
@@ -170,11 +190,16 @@ export class Engine {
 
     this.processDrawing(now);
     this.processIdleTimers(now, delta);
+    this.freezeAdvanceBlend();
     this.render(now);
     this.updateStats(now, delta);
 
     this.rafId = requestAnimationFrame(this.loop);
   };
+
+  private freezeAdvanceBlend(): void {
+    this.freezeController.advanceUnfreezeBlend();
+  }
 
   private async processTracking(now: number): Promise<void> {
     this.trackingInProgress = true;
@@ -196,122 +221,195 @@ export class Engine {
       this.scene.markVideoNeedsUpdate();
       this._stats.inferenceMs = performance.now() - t0;
 
-    if (hands.length > 0) {
-      hands = hands.filter((h) => computeHandScale(h.landmarks) >= 0.07);
-      if (hands.length > 1) {
-        hands.sort((a, b) => computeHandScale(b.landmarks) - computeHandScale(a.landmarks));
-        hands = [hands[0]];
-      }
-    }
-
-    this.attractTimer = 0;
-    this.idleFadeTimer = 0;
-    this.bus.emit('hand_update', { hands });
-
-    if (hands.length > 0) {
-      const t2 = performance.now();
-      const result = this.gesture.recognize(hands, now);
-      this._stats.gestureMs = performance.now() - t2;
-
-      const pipelineStart = performance.now();
-
-      for (const g of result.events) {
-        this.bus.emit('gesture', g);
-        const action = this.actionMapper.translate(g);
-        if (action.type !== 'IDLE') {
-          this.bus.emit('action', action);
+      if (hands.length > 0) {
+        hands = hands.filter((h) => computeHandScale(h.landmarks) >= 0.07);
+        if (hands.length > 1) {
+          hands.sort((a, b) => computeHandScale(b.landmarks) - computeHandScale(a.landmarks));
+          hands = [hands[0]];
         }
       }
 
-      if (result.pipelineDebug) {
-        this._stats.motionSpeed = result.pipelineDebug.motionSpeed;
-        this._stats.trackingStability = result.pipelineDebug.trackingStability;
-        this._stats.intentConfidence = result.pipelineDebug.intentScore;
-      }
+      const integrity: HandIntegrity | null = hands.length > 0
+        ? this.tracker.getIntegrity(hands[0])
+        : null;
+      this.lastIntegrity = integrity;
 
-      const sortedHands = [...hands].sort((a, b) => getHandCenterX(a) - getHandCenterX(b));
+      const edgeProx: EdgeProximityInfo | null = hands.length > 0
+        ? this.edgeDetector.compute(hands[0].landmarks)
+        : null;
+      this.lastEdgeProx = edgeProx;
 
-      let primaryGesture: GestureType | null = null;
-      let primaryConfidence = 0;
-      for (const hand of sortedHands) {
-        const st = result.handStates.get(hand.handedness);
-        if (st && st.type && st.confidence > primaryConfidence) {
-          primaryGesture = st.type;
-          primaryConfidence = st.confidence;
+      this.attractTimer = 0;
+      this.idleFadeTimer = 0;
+      this.bus.emit('hand_update', { hands });
+
+      if (hands.length > 0) {
+        const primaryHand = hands[0];
+        const freezeState = this.freezeController.update(
+          'idle', 0, integrity ?? this.zeroIntegrity(), edgeProx ?? this.zeroEdgeProx(), now,
+        );
+
+        const t2 = performance.now();
+        const result = this.gesture.recognize(hands, now, integrity, edgeProx, freezeState);
+        this._stats.gestureMs = performance.now() - t2;
+
+        const pipelineStart = performance.now();
+
+        for (const g of result.events) {
+          this.bus.emit('gesture', g);
+          const action = this.actionMapper.translate(g);
+          if (action.type !== 'IDLE') {
+            this.bus.emit('action', action);
+          }
         }
-      }
-      if (primaryGesture) {
-        useStore.getState().setGesture(primaryGesture, sortedHands[0]?.handedness ?? 'Right', primaryConfidence);
-      }
 
-      if (result.pipelineDebug) {
-        const debugInfo: GestureDebugInfo = {
-          activeGesture: primaryGesture ?? 'idle',
-          gestureConfidence: primaryConfidence,
-          motionSpeed: result.pipelineDebug.motionSpeed,
-          stableCount: 0,
-          trackingStability: result.pipelineDebug.trackingStability,
-          intentScore: result.pipelineDebug.intentScore,
-          dynamicThreshold: result.pipelineDebug.dynamicThreshold,
-        };
-        useStore.getState().setGestureDebug(debugInfo);
-      }
-
-      for (let i = 0; i < sortedHands.length; i++) {
-        const hand = sortedHands[i];
-        const handKey = getHandKey(hand, i);
-        const point = getDrawingPoint(hand.landmarks, this.config.canvas);
-        if (!point) continue;
-
-        const handState = result.handStates.get(hand.handedness);
-        const gestureType = handState?.type ?? null;
-
-        const idxTip = getLandmark(hand.landmarks, 8);
-        this.updateCursor(idxTip, gestureType, now, handState?.confidence ?? 0);
-
-        if (gestureType === 'eraser') {
-          this.endActiveStroke(handKey);
-          this.drawing.eraseStrokesAtPoint(point.x, point.y, 0.05);
-          useStore.getState().setIsErasing(true);
-          continue;
+        if (result.pipelineDebug) {
+          this._stats.motionSpeed = result.pipelineDebug.motionSpeed;
+          this._stats.trackingStability = result.pipelineDebug.trackingStability;
+          this._stats.intentConfidence = result.pipelineDebug.intentScore;
         }
-        useStore.getState().setIsErasing(false);
 
-        if (gestureType === 'cursor') {
-          this.endActiveStroke(handKey);
-          this.handleCursorMode(hand, idxTip, now);
-          continue;
+        const sortedHands = [...hands].sort((a, b) => getHandCenterX(a) - getHandCenterX(b));
+
+        let primaryGesture: GestureType | null = null;
+        let primaryConfidence = 0;
+        for (const hand of sortedHands) {
+          const st = result.handStates.get(hand.handedness);
+          if (st && st.type && st.confidence > primaryConfidence) {
+            primaryGesture = st.type;
+            primaryConfidence = st.confidence;
+          }
         }
-        this.deactivatePalette();
 
-        if (gestureType === 'drawing') {
-          this.handleDrawingMode(hand, handKey, point, idxTip, now);
+        const effectiveGesture = freezeState.frozen ? freezeState.lastStableGesture : (primaryGesture ?? 'idle');
+        const effectiveConfidence = freezeState.frozen ? freezeState.lastStableConfidence : primaryConfidence;
+
+        if (primaryGesture) {
+          useStore.getState().setGesture(effectiveGesture, sortedHands[0]?.handedness ?? 'Right', effectiveConfidence);
+        }
+
+        if (result.pipelineDebug) {
+          const debugInfo: GestureDebugInfo = {
+            activeGesture: effectiveGesture,
+            gestureConfidence: effectiveConfidence,
+            motionSpeed: result.pipelineDebug.motionSpeed,
+            stableCount: 0,
+            trackingStability: result.pipelineDebug.trackingStability,
+            intentScore: result.pipelineDebug.intentScore,
+            dynamicThreshold: result.pipelineDebug.dynamicThreshold,
+            handIntegrity: integrity?.score ?? 0,
+            edgeProximity: edgeProx?.overall ?? 0,
+            gestureFrozen: freezeState.frozen,
+            freezeActive: freezeState.frozen,
+            predictionActive: freezeState.frozen && freezeState.lastStableGesture !== 'idle',
+            safeZoneActive: (edgeProx?.overall ?? 0) > 0.3,
+          };
+          useStore.getState().setGestureDebug(debugInfo);
+        }
+
+        useStore.getState().setIntegrityDebug(
+          integrity?.score ?? 0,
+          edgeProx?.overall ?? 0,
+          freezeState.frozen,
+          freezeState.frozen,
+          freezeState.frozen && freezeState.lastStableGesture !== 'idle',
+          (edgeProx?.overall ?? 0) > 0.3,
+          hands.length === 0,
+        );
+
+        for (let i = 0; i < sortedHands.length; i++) {
+          const hand = sortedHands[i];
+          const handKey = getHandKey(hand, i);
+          const point = getDrawingPoint(hand.landmarks, this.config.canvas);
+          if (!point) continue;
+
+          const handState = result.handStates.get(hand.handedness);
+          const gestureType = freezeState.frozen ? freezeState.lastStableGesture : (handState?.type ?? null);
+
+          const idxTip = getLandmark(hand.landmarks, 8);
+          this.updateCursor(idxTip, gestureType, now, handState?.confidence ?? 0, integrity, edgeProx);
+
+          if (gestureType === 'eraser') {
+            this.endActiveStroke(handKey);
+            this.drawing.eraseStrokesAtPoint(point.x, point.y, 0.05);
+            useStore.getState().setIsErasing(true);
+            continue;
+          }
+          useStore.getState().setIsErasing(false);
+
+          if (gestureType === 'cursor') {
+            this.endActiveStroke(handKey);
+            this.handleCursorMode(hand, idxTip, now);
+            continue;
+          }
+          this.deactivatePalette();
+
+          if (gestureType === 'drawing') {
+            this.handleDrawingMode(hand, handKey, point, idxTip, now, freezeState);
+          } else {
+            if (!freezeState.frozen) {
+              this.endActiveStroke(handKey);
+            }
+          }
+        }
+
+        if (!freezeState.frozen) {
+          for (const handKey of [...this.activeDrawHands]) {
+            if (!hands.find((_, i) => getHandKey(hands[i], i) === handKey)) {
+              this.endActiveStroke(handKey);
+            }
+          }
+        }
+
+        this._stats.pipelineLatencyMs = performance.now() - pipelineStart;
+      } else {
+        const freezeState = this.freezeController.update(
+          'idle', 0, integrity ?? this.zeroIntegrity(), edgeProx ?? this.zeroEdgeProx(), now,
+        );
+        this.lastFreezeState = freezeState;
+
+        if (freezeState.frozen && this.activeDrawHands.size > 0) {
+          const pred = this.predictiveCursor.getCurrent();
+          if (pred) {
+            const safe = this.safeZoneMapper.map(pred.x, pred.y);
+            const freezePoint: StrokePoint = {
+              x: (safe.stabilizedX - 0.5) * 2 * (this.config.canvas.clientWidth / this.config.canvas.clientHeight),
+              y: -(safe.stabilizedY - 0.5) * 2,
+              z: 0,
+            };
+            for (const handKey of this.activeDrawHands) {
+              this.drawing.extendStroke(handKey, freezePoint);
+            }
+          }
+
+          this.cursorState.isDrawing = true;
+          this.cursorState.opacity = Math.max(0.15, this.cursorState.opacity - 0.02);
+          useStore.getState().setCursor(this.cursorState.easedX, this.cursorState.easedY, this.cursorState);
+
+          this._stats.activeHands = 0;
+          this._stats.pipelineLatencyMs = 0;
+          return;
+        }
+
+        for (const h of this.activeDrawHands) {
+          const data = this.drawing.endStroke(h);
+          if (data) this.bus.emit('stroke_added', data);
+        }
+        this.activeDrawHands.clear();
+        this.useStore().setGesture('idle', 'Left', 0);
+        this.useStore().setGesture('idle', 'Right', 0);
+        this.useStore().setIsDrawing(false);
+
+        if (this.cursorState.opacity > 0.01) {
+          this.cursorState.opacity = Math.max(0, this.cursorState.opacity - 0.04);
+          useStore.getState().setCursor(this.cursorState.easedX, this.cursorState.easedY, this.cursorState);
         } else {
-          this.endActiveStroke(handKey);
+          useStore.getState().setCursor(null, null);
+          this.cursorState.visible = false;
         }
+        this.useStore().setColorPaletteActive(false);
+        this.deactivatePalette();
       }
-
-      for (const handKey of [...this.activeDrawHands]) {
-        if (!hands.find((_, i) => getHandKey(hands[i], i) === handKey)) {
-          this.endActiveStroke(handKey);
-        }
-      }
-
-      this._stats.pipelineLatencyMs = performance.now() - pipelineStart;
-    } else {
-      for (const h of this.activeDrawHands) {
-        const data = this.drawing.endStroke(h);
-        if (data) this.bus.emit('stroke_added', data);
-      }
-      this.activeDrawHands.clear();
-      this.useStore().setGesture('idle', 'Left', 0);
-      this.useStore().setGesture('idle', 'Right', 0);
-      this.useStore().setIsDrawing(false);
-      this.useStore().setCursor(null, null);
-      this.useStore().setColorPaletteActive(false);
-      this.deactivatePalette();
-      this.cursorState.visible = false;
-    }
 
       this._stats.activeHands = hands.length;
     } finally {
@@ -321,6 +419,20 @@ export class Engine {
 
   private useStore() { return useStore.getState(); }
 
+  private zeroIntegrity(): HandIntegrity {
+    return {
+      score: 0, wristVisible: false, palmIntact: false,
+      individualFingers: { thumb: false, index: false, middle: false, ring: false, pinky: false },
+      requiredGroups: { drawing: false, cursor: false, eraser: false },
+      edgeFlags: { anyEdge: false, leftEdge: false, rightEdge: false, topEdge: false, bottomEdge: false },
+      missingLandmarkCount: 21,
+    };
+  }
+
+  private zeroEdgeProx(): EdgeProximityInfo {
+    return { left: 0, right: 0, top: 0, bottom: 0, overall: 0, dampingFactor: 1 };
+  }
+
   private processIdleTimers(now: number, _delta: number): void {
     if (this.mode === 'camera') {
       this.attractTimer += _delta;
@@ -328,19 +440,34 @@ export class Engine {
     }
   }
 
-  private updateCursor(idxTip: [number, number, number] | null, gestureType: GestureType | null, now: number, confidence: number): void {
-    if (idxTip) {
-      this.cursorState.targetX = idxTip[0];
-      this.cursorState.targetY = idxTip[1];
+  private updateCursor(
+    idxTip: [number, number, number] | null,
+    gestureType: GestureType | null,
+    now: number,
+    confidence: number,
+    integrity: HandIntegrity | null,
+    edgeProx: EdgeProximityInfo | null,
+  ): void {
+    if (idxTip && integrity && integrity.score >= 0.3) {
+      const safe = this.safeZoneMapper.map(idxTip[0], idxTip[1]);
+      this.cursorState.targetX = safe.stabilizedX;
+      this.cursorState.targetY = safe.stabilizedY;
 
       const dx = this.cursorState.targetX - this.cursorState.easedX;
       const dy = this.cursorState.targetY - this.cursorState.easedY;
-      this.cursorState.easedX += dx * INTERACTION.CURSOR_EASING_FACTOR;
-      this.cursorState.easedY += dy * INTERACTION.CURSOR_EASING_FACTOR;
+      const easeFactor = edgeProx && edgeProx.dampingFactor < 0.7
+        ? INTERACTION.CURSOR_EASING_FACTOR * (1 + (1 - (edgeProx?.dampingFactor ?? 1)) * 0.5)
+        : INTERACTION.CURSOR_EASING_FACTOR;
+
+      this.cursorState.easedX += dx * easeFactor;
+      this.cursorState.easedY += dy * easeFactor;
 
       this.cursorState.x = this.cursorState.easedX;
       this.cursorState.y = this.cursorState.easedY;
       this.cursorState.visible = true;
+      this.cursorFadeTimer = 0;
+
+      this.predictiveCursor.update(this.cursorState.easedX, this.cursorState.easedY, now);
 
       this.cursorState.isDrawing = gestureType === 'drawing';
       this.cursorState.isErasing = gestureType === 'eraser';
@@ -357,21 +484,33 @@ export class Engine {
         this.cursorState.opacity = INTERACTION.CURSOR_MODE_OPACITY;
       } else {
         this.cursorState.size = 8;
-        this.cursorState.opacity = 0.4;
+        this.cursorState.opacity = 0.4 * (edgeProx?.dampingFactor ?? 1);
       }
 
       useStore.getState().setCursor(this.cursorState.easedX, this.cursorState.easedY, this.cursorState);
       useStore.getState().setCursorMode(gestureType === 'cursor');
     } else {
-      this.cursorState.visible = false;
-      useStore.getState().setCursor(null, null);
+      this.cursorFadeTimer++;
+      if (this.cursorState.visible && this.cursorFadeTimer < 20) {
+        this.cursorState.opacity = Math.max(0.1, this.cursorState.opacity - 0.03);
+        this.freezePredictedPos = this.freezePredictedPos ?? {
+          x: this.cursorState.easedX,
+          y: this.cursorState.easedY,
+        };
+        this.cursorState.easedX += (this.freezePredictedPos.x - this.cursorState.easedX) * 0.1;
+        this.cursorState.easedY += (this.freezePredictedPos.y - this.cursorState.easedY) * 0.1;
+        useStore.getState().setCursor(this.cursorState.easedX, this.cursorState.easedY, this.cursorState);
+      } else {
+        this.cursorState.visible = false;
+        useStore.getState().setCursor(null, null);
+        this.freezePredictedPos = null;
+      }
     }
   }
 
   private handleCursorMode(hand: HandSnapshot, idxTip: [number, number, number] | null, now: number): void {
     if (!idxTip) return;
 
-    // Narrow left strip: hand at far-left edge of camera activates the palette
     const isInPaletteZone = idxTip[0] < INTERACTION.PALETTE_ZONE_X;
     const store = useStore.getState();
 
@@ -382,7 +521,6 @@ export class Engine {
 
       store.setColorPaletteActive(true);
 
-      // Use vertical (y) position — hand up = first color, hand down = last color
       const normalizedY = Math.max(0, Math.min(1,
         (this.cursorState.easedY - INTERACTION.PALETTE_Y_MIN)
         / (INTERACTION.PALETTE_Y_MAX - INTERACTION.PALETTE_Y_MIN)
@@ -399,8 +537,17 @@ export class Engine {
     }
   }
 
-  private handleDrawingMode(hand: HandSnapshot, handKey: string, point: StrokePoint, idxTip: [number, number, number] | null, now: number): void {
-    const atTop = idxTip !== null && idxTip[1] < INTERACTION.DRAW_STOP_ZONE_Y;
+  private handleDrawingMode(
+    hand: HandSnapshot,
+    handKey: string,
+    point: StrokePoint,
+    idxTip: [number, number, number] | null,
+    now: number,
+    freezeState?: GestureFreezeState,
+  ): void {
+    const isFrozen = freezeState?.frozen ?? false;
+    const atTop = !isFrozen && idxTip !== null && idxTip[1] < INTERACTION.DRAW_STOP_ZONE_Y;
+
     if (!atTop) {
       if (!this.activeDrawHands.has(handKey)) {
         const state = useStore.getState();

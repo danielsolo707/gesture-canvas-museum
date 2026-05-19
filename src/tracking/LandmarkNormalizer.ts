@@ -1,4 +1,4 @@
-import { NUM_LANDMARKS, LANDMARKS_FLOAT_SIZE, Handedness, CalibrationData } from '../core/types';
+import { NUM_LANDMARKS, LANDMARKS_FLOAT_SIZE, Handedness } from '../core/types';
 import { getLandmark, distance3D, vec3Sub, normalize, dot } from '../utils/math';
 
 export interface NormalizedHand {
@@ -13,18 +13,9 @@ export interface NormalizedHand {
 
 export class LandmarkNormalizer {
   private readonly mirrored: boolean;
-  private calibration: CalibrationData | null = null;
 
   constructor(mirrored = true) {
     this.mirrored = mirrored;
-  }
-
-  setCalibration(data: CalibrationData | null): void {
-    this.calibration = data;
-  }
-
-  getCalibration(): CalibrationData | null {
-    return this.calibration;
   }
 
   normalize(
@@ -37,10 +28,6 @@ export class LandmarkNormalizer {
 
     if (this.mirrored) {
       landmarks = this.applyMirrorCorrection(landmarks, handedness);
-    }
-
-    if (this.calibration) {
-      landmarks = this.applyCalibration(landmarks, this.calibration);
     }
 
     const wrist = getLandmark(landmarks, 0);
@@ -61,16 +48,6 @@ export class LandmarkNormalizer {
       scale,
       rotationMatrix,
     };
-  }
-
-  private applyCalibration(landmarks: Float32Array, cal: CalibrationData): Float32Array {
-    const result = new Float32Array(landmarks.length);
-    for (let i = 0; i < landmarks.length; i += 3) {
-      result[i] = landmarks[i] * cal.offsetVector[0];
-      result[i + 1] = landmarks[i + 1] * cal.offsetVector[1];
-      result[i + 2] = landmarks[i + 2] * cal.offsetVector[2];
-    }
-    return result;
   }
 
   private applyMirrorCorrection(

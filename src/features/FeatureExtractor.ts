@@ -15,6 +15,8 @@ export class FeatureExtractor {
   private prevVelocity: [number, number, number] = [0, 0, 0];
   private prevFingertipPos: [number, number, number] = [0, 0, 0];
   private hasPrev = false;
+  private lastValidOpenness: FingerOpenness | null = null;
+  private lowIntegrityCount = 0;
 
   extract(normalized: NormalizedHand, timestamp: number): HandFeatures {
     const lm = normalized.landmarks;
@@ -116,8 +118,13 @@ export class FeatureExtractor {
       0, 0, 0,
     );
     if (handSize < 0.001) {
+      this.lowIntegrityCount++;
+      if (this.lastValidOpenness && this.lowIntegrityCount < 15) {
+        return this.lastValidOpenness;
+      }
       return { thumb: 0, index: 0, middle: 0, ring: 0, pinky: 0 };
     }
+    this.lowIntegrityCount = 0;
 
     const fingerDefs: { key: keyof FingerOpenness; mcp: number; tip: number }[] = [
       { key: 'thumb',  mcp: L.THUMB_MCP,  tip: L.THUMB_TIP },
@@ -139,7 +146,9 @@ export class FeatureExtractor {
       result[key] = Math.max(0, Math.min(1, (normalized - 0.18) * 1.8));
     }
 
-    return result as FingerOpenness;
+    const openness = result as FingerOpenness;
+    this.lastValidOpenness = openness;
+    return openness;
   }
 
   private computeInterFingerDistances(lm: Float32Array): [number, number, number, number, number] {
@@ -175,5 +184,7 @@ export class FeatureExtractor {
     this.hasPrev = false;
     this.prevVelocity = [0, 0, 0];
     this.prevFingertipPos = [0, 0, 0];
+    this.lastValidOpenness = null;
+    this.lowIntegrityCount = 0;
   }
 }

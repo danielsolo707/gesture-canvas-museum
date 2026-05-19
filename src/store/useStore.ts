@@ -33,6 +33,18 @@ export interface AppStore {
   gestureDebug: GestureDebugInfo | null;
   setGestureDebug: (info: GestureDebugInfo) => void;
 
+  handIntegrity: number;
+  edgeProximity: number;
+  gestureFrozen: boolean;
+  freezeActive: boolean;
+  predictionActive: boolean;
+  safeZoneActive: boolean;
+  extrapolating: boolean;
+  setIntegrityDebug: (
+    integrity: number, edge: number, frozen: boolean,
+    freeze: boolean, prediction: boolean, safeZone: boolean, extrapolating: boolean,
+  ) => void;
+
   strokes: StrokeData[];
   strokeCount: number;
   isDrawing: boolean;
@@ -106,6 +118,16 @@ export const useStore = create<AppStore>()((set, get) => ({
 
   gestureDebug: null,
   setGestureDebug: (gestureDebug) => set({ gestureDebug }),
+
+  handIntegrity: 0,
+  edgeProximity: 0,
+  gestureFrozen: false,
+  freezeActive: false,
+  predictionActive: false,
+  safeZoneActive: false,
+  extrapolating: false,
+  setIntegrityDebug: (integrity, edge, frozen, freeze, prediction, safeZone, extrapolating) =>
+    set({ handIntegrity: integrity, edgeProximity: edge, gestureFrozen: frozen, freezeActive: freeze, predictionActive: prediction, safeZoneActive: safeZone, extrapolating }),
 
   strokes: [],
   strokeCount: 0,

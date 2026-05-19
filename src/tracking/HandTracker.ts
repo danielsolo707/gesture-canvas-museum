@@ -1,7 +1,8 @@
-import { HandSnapshot, Handedness } from '../core/types';
+import { HandSnapshot, Handedness, HandIntegrity } from '../core/types';
 import { INFERENCE, SMOOTHING } from '../core/constants';
 import { OneEuroFilter } from '../smoothing/OneEuroFilter';
 import { logger } from '../utils/logging';
+import { HandIntegrityValidator, IntegrityResult } from './HandIntegrityValidator';
 
 type HandLandmarkerInstance = {
   detectForVideo: (source: HTMLCanvasElement, timestamp: number) => {
@@ -33,6 +34,8 @@ export class HandTracker {
   private workerBusy = false;
   private useWorker = true;
   private pendingWorkerResolve: ((hands: HandSnapshot[]) => void) | null = null;
+  private integrityValidator: HandIntegrityValidator;
+  private lastIntegrityResult: IntegrityResult | null = null;
 
   constructor() {
     this.filter = new OneEuroFilter({
@@ -40,6 +43,7 @@ export class HandTracker {
       beta: SMOOTHING.BETA,
       dCutoff: SMOOTHING.D_CUTOFF,
     });
+    this.integrityValidator = new HandIntegrityValidator();
   }
 
   async initialize(): Promise<void> {
@@ -201,11 +205,7 @@ export class HandTracker {
       this.lastHands = hands;
       this.lastHandsAt = now;
 
-      if (hands.length > 0) {
-        logger.info('HandTracker detected hands', {
-          hands: hands.map((h) => ({ handedness: h.handedness, confidence: h.confidence })),
-        });
-      }
+      this.validateHandIntegrity(hands);
 
       return hands;
     } catch (err) {
@@ -240,6 +240,25 @@ export class HandTracker {
         confidence: Math.max(0, hand.confidence - t * 0.03),
       };
     });
+  }
+
+  getIntegrity(hand?: HandSnapshot): HandIntegrity | null {
+    const lm = hand?.landmarks ?? null;
+    const result = this.integrityValidator.validate(lm);
+    this.lastIntegrityResult = result;
+    return {
+      score: result.score,
+      wristVisible: result.wristVisible,
+      palmIntact: result.palmIntact,
+      individualFingers: result.individualFingers,
+      requiredGroups: result.requiredGroups,
+      edgeFlags: result.edgeFlags,
+      missingLandmarkCount: result.missingLandmarkCount,
+    };
+  }
+
+  getIntegrityResult(): IntegrityResult | null {
+    return this.lastIntegrityResult;
   }
 
   private processRawResult(
@@ -301,6 +320,14 @@ export class HandTracker {
         timestamp,
       };
     });
+  }
+
+  private validateHandIntegrity(hands: HandSnapshot[]): void {
+    if (hands.length > 0) {
+      this.lastIntegrityResult = this.integrityValidator.validate(hands[0].landmarks);
+    } else {
+      this.lastIntegrityResult = this.integrityValidator.validate(null);
+    }
   }
 
   private processBinaryFrame(
@@ -367,6 +394,8 @@ export class HandTracker {
         timestamp,
       });
     }
+
+    this.validateHandIntegrity(result);
 
     return result;
   }

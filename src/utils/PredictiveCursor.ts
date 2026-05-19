@@ -84,6 +84,25 @@ export class PredictiveCursor {
     return { x: this.smoothedX, y: this.smoothedY, predictedX: predX, predictedY: predY };
   }
 
+  getCurrent(): { x: number; y: number } | null {
+    if (this.history.length === 0) return null;
+    const speed = Math.sqrt(this.velocityX ** 2 + this.velocityY ** 2);
+    if (speed > this.config.minSpeedForPrediction) {
+      const t = Math.min(this.config.predictionHorizon, this.config.maxPredictionDistance / Math.max(speed, 0.001));
+      const predX = this.smoothedX + this.velocityX * t;
+      const predY = this.smoothedY + this.velocityY * t;
+      const dx = predX - this.smoothedX;
+      const dy = predY - this.smoothedY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > this.config.maxPredictionDistance) {
+        const scale = this.config.maxPredictionDistance / dist;
+        return { x: this.smoothedX + dx * scale, y: this.smoothedY + dy * scale };
+      }
+      return { x: predX, y: predY };
+    }
+    return { x: this.smoothedX, y: this.smoothedY };
+  }
+
   reset(): void {
     this.history = [];
     this.smoothedX = 0;

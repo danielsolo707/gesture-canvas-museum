@@ -1,3 +1,36 @@
+export interface HandIntegrity {
+  score: number;
+  wristVisible: boolean;
+  palmIntact: boolean;
+  individualFingers: { thumb: boolean; index: boolean; middle: boolean; ring: boolean; pinky: boolean };
+  requiredGroups: { drawing: boolean; cursor: boolean; eraser: boolean };
+  edgeFlags: { anyEdge: boolean; leftEdge: boolean; rightEdge: boolean; topEdge: boolean; bottomEdge: boolean };
+  missingLandmarkCount: number;
+}
+
+export interface EdgeProximityInfo {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+  overall: number;
+  dampingFactor: number;
+}
+
+export interface GestureFreezeState {
+  frozen: boolean;
+  lastStableGesture: GestureType;
+  freezeDurationMs: number;
+  blendProgress: number;
+}
+
+export interface SafeZoneState {
+  stabilizedX: number;
+  stabilizedY: number;
+  dampingApplied: boolean;
+  isInSafeZone: boolean;
+}
+
 export const LANDMARK_INDICES = {
   WRIST: 0,
   THUMB_CMC: 1,
@@ -95,6 +128,12 @@ export interface GestureDebugInfo {
   trackingStability: number;
   intentScore: number;
   dynamicThreshold: number;
+  handIntegrity: number;
+  edgeProximity: number;
+  gestureFrozen: boolean;
+  freezeActive: boolean;
+  predictionActive: boolean;
+  safeZoneActive: boolean;
 }
 
 export interface CursorState {
@@ -129,14 +168,6 @@ export interface Action {
   source: GestureType;
   hand: Handedness;
   confidence: number;
-}
-
-export interface CalibrationData {
-  scaleFactor: number;
-  offsetVector: [number, number, number];
-  sampleCount: number;
-  wristToTipSpan: number;
-  palmWidth: number;
 }
 
 export interface FramebufferMetrics {
