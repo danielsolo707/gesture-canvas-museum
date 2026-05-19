@@ -80,6 +80,8 @@ export function useEngine() {
       s.setIsDrawing(false);
       s.setIsErasing(false);
       s.setCursorMode(false);
+      s.setShowTutorial(true);
+      engineRef.current?.getStrokeEngine().clearAll();
     });
 
     await engine.start();
