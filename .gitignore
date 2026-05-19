@@ -27,14 +27,12 @@ desktop.ini
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-
-# TypeScript
-*.tsbuildinfo
-
-# Coverage
-coverage/
-.nyc_output/
+dev-server*.log
 
 # Temp
 tmp/
 temp/
+tmp-playwright-diagnose.*
+
+# Reports
+PROJECT_REPORT.md
