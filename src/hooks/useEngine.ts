@@ -7,6 +7,7 @@ import { KioskMode } from '../utils/KioskMode';
 
 export function useEngine() {
   const engineRef = useRef<Engine | null>(null);
+  const kioskRef = useRef<KioskMode | null>(null);
   const lastHandUpdateRef = useRef<number>(0);
   const staleIntervalRef = useRef<number | null>(null);
 
@@ -36,6 +37,7 @@ export function useEngine() {
     });
 
     const unsubHands = globalEventBus.on('hand_update', ({ hands }: { hands: HandSnapshot[] }) => {
+      kioskRef.current?.recordActivity();
       lastHandUpdateRef.current = Date.now();
       useStore.getState().setHands(
         hands.map((hand) => ({
@@ -70,6 +72,7 @@ export function useEngine() {
     }
 
     const kiosk = new KioskMode({ fullscreenEnabled: false });
+    kioskRef.current = kiosk;
     kiosk.enable(() => {
       const s = useStore.getState();
       s.setGesture('idle', 'Left', 0);
@@ -99,6 +102,7 @@ export function useEngine() {
         staleIntervalRef.current = null;
       }
       kiosk.disable();
+      kioskRef.current = null;
     };
   }, []);
 
