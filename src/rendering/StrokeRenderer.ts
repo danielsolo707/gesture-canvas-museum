@@ -1,17 +1,35 @@
 import * as THREE from 'three';
-import { StrokeData } from '../core/types';
+import { StrokeData, StrokePoint } from '../core/types';
+import { DRAWING, RENDER } from '../core/constants';
+
+interface PooledGeometry {
+  geometry: THREE.BufferGeometry;
+  lastUsed: number;
+}
+
+const MAX_POOL_SIZE = 200;
 
 export class StrokeRenderer {
   private scene: THREE.Scene;
-  private meshes: Map<string, THREE.Mesh> = new Map();
+  private meshes = new Map<string, THREE.Mesh>();
+  private glowMeshes = new Map<string, THREE.Mesh>();
   private material: THREE.MeshBasicMaterial;
+  private glowMaterial: THREE.MeshBasicMaterial;
   private strokeGroup: THREE.Group;
+  private glowGroup: THREE.Group;
+  private geometryPool: PooledGeometry[] = [];
+  private frameCount = 0;
 
   constructor(scene: THREE.Scene) {
     this.scene = scene;
+
     this.strokeGroup = new THREE.Group();
     this.strokeGroup.renderOrder = 1;
     this.scene.add(this.strokeGroup);
+
+    this.glowGroup = new THREE.Group();
+    this.glowGroup.renderOrder = 0;
+    this.scene.add(this.glowGroup);
 
     this.material = new THREE.MeshBasicMaterial({
       vertexColors: true,
@@ -20,27 +38,54 @@ export class StrokeRenderer {
       depthWrite: false,
       side: THREE.DoubleSide,
     });
+
+    this.glowMaterial = new THREE.MeshBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.15,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+    });
   }
 
   addStroke(stroke: StrokeData): void {
     if (stroke.points.length < 2) return;
-
     this.removeStroke(stroke.id);
 
-    const geo = this.buildRibbonGeometry(stroke);
+    const smoothPts = this.catmullRomSmooth(stroke.points, DRAWING.CURVE_QUALITY);
+    const widths = this.computeVelocityWidths(smoothPts, stroke.width);
+
+    const geo = this.buildRibbonGeometry(smoothPts, widths, stroke.color);
     const mesh = new THREE.Mesh(geo, this.material);
     mesh.renderOrder = 1;
     mesh.frustumCulled = false;
-
     this.strokeGroup.add(mesh);
     this.meshes.set(stroke.id, mesh);
+
+    if (RENDER.STROKE_GLOW_ENABLED) {
+      const glowGeo = this.buildRibbonGeometry(smoothPts, widths.map(w => w * 2.5), stroke.color);
+      const glow = new THREE.Mesh(glowGeo, this.glowMaterial);
+      glow.renderOrder = 0;
+      glow.frustumCulled = false;
+      this.glowGroup.add(glow);
+      this.glowMeshes.set(stroke.id, glow);
+    }
   }
 
   updateStroke(stroke: StrokeData): void {
     const existing = this.meshes.get(stroke.id);
     if (existing) {
-      existing.geometry.dispose();
-      existing.geometry = this.buildRibbonGeometry(stroke);
+      this.recycleGeometry(existing.geometry);
+      const smoothPts = this.catmullRomSmooth(stroke.points, DRAWING.CURVE_QUALITY);
+      const widths = this.computeVelocityWidths(smoothPts, stroke.width);
+      existing.geometry = this.buildRibbonGeometry(smoothPts, widths, stroke.color);
+
+      const glow = this.glowMeshes.get(stroke.id);
+      if (glow) {
+        this.recycleGeometry(glow.geometry);
+        glow.geometry = this.buildRibbonGeometry(smoothPts, widths.map(w => w * 2.5), stroke.color);
+      }
     } else {
       this.addStroke(stroke);
     }
@@ -50,17 +95,28 @@ export class StrokeRenderer {
     const mesh = this.meshes.get(strokeId);
     if (mesh) {
       this.strokeGroup.remove(mesh);
-      mesh.geometry.dispose();
+      this.recycleGeometry(mesh.geometry);
       this.meshes.delete(strokeId);
+    }
+    const glow = this.glowMeshes.get(strokeId);
+    if (glow) {
+      this.glowGroup.remove(glow);
+      this.recycleGeometry(glow.geometry);
+      this.glowMeshes.delete(strokeId);
     }
   }
 
   clear(): void {
     for (const [, mesh] of this.meshes) {
       this.strokeGroup.remove(mesh);
-      mesh.geometry.dispose();
+      this.recycleGeometry(mesh.geometry);
+    }
+    for (const [, glow] of this.glowMeshes) {
+      this.glowGroup.remove(glow);
+      this.recycleGeometry(glow.geometry);
     }
     this.meshes.clear();
+    this.glowMeshes.clear();
   }
 
   rebuildAll(strokes: StrokeData[]): void {
@@ -70,108 +126,172 @@ export class StrokeRenderer {
     }
   }
 
-  update(_now: number): void {}
-
-  private buildRibbonGeometry(stroke: StrokeData): THREE.BufferGeometry {
-    const pts = stroke.points;
-    const width = stroke.width * 0.005;
-    const color = new THREE.Color(stroke.color);
-    const capSegments = 10;
-
-    if (pts.length < 2) {
-      return new THREE.BufferGeometry();
+  update(_now: number): void {
+    this.frameCount++;
+    if (this.frameCount % 300 === 0) {
+      this.evictPool();
     }
+  }
 
-    const baseVertexCount = (pts.length - 1) * 4;
-    const capVertexCount = pts.length * (capSegments + 1);
-    const totalVertexCount = baseVertexCount + capVertexCount;
-    const baseIndexCount = (pts.length - 1) * 6;
-    const capIndexCount = pts.length * capSegments * 3;
-    const totalIndexCount = baseIndexCount + capIndexCount;
-    const useUint32 = totalVertexCount > 65535;
-
-    const positions = new Float32Array(totalVertexCount * 3);
-    const vertColors = new Float32Array(totalVertexCount * 3);
-    const indices = useUint32 ? new Uint32Array(totalIndexCount) : new Uint16Array(totalIndexCount);
-
-    let v = 0;
-    let idx = 0;
-
-    const writeVertex = (x: number, y: number, z: number): number => {
-      const base = v * 3;
-      positions[base] = x;
-      positions[base + 1] = y;
-      positions[base + 2] = z;
-      vertColors[base] = color.r;
-      vertColors[base + 1] = color.g;
-      vertColors[base + 2] = color.b;
-      return v++;
-    };
-
-    for (let i = 1; i < pts.length; i++) {
-      const p0 = pts[i - 1];
-      const p1 = pts[i];
-
-      const dx = p1.x - p0.x;
-      const dy = p1.y - p0.y;
-      const len = Math.sqrt(dx * dx + dy * dy) || 1;
-      const nx = -dy / len;
-      const ny = dx / len;
-
-      const v0 = writeVertex(p0.x + nx * width, p0.y + ny * width, p0.z ?? 0);
-      const v1 = writeVertex(p0.x - nx * width, p0.y - ny * width, p0.z ?? 0);
-      const v2 = writeVertex(p1.x + nx * width, p1.y + ny * width, p1.z ?? 0);
-      const v3 = writeVertex(p1.x - nx * width, p1.y - ny * width, p1.z ?? 0);
-
-      indices[idx++] = v0;
-      indices[idx++] = v1;
-      indices[idx++] = v2;
-      indices[idx++] = v1;
-      indices[idx++] = v3;
-      indices[idx++] = v2;
+  private recycleGeometry(geo: THREE.BufferGeometry): void {
+    if (this.geometryPool.length < MAX_POOL_SIZE) {
+      this.geometryPool.push({ geometry: geo, lastUsed: this.frameCount });
+    } else {
+      geo.dispose();
     }
+  }
 
-    for (let i = 0; i < pts.length; i++) {
-      const p = pts[i];
-      const centerIdx = writeVertex(p.x, p.y, p.z ?? 0);
-      let firstRing = -1;
-      let prevRing = -1;
+  private acquireGeometry(): THREE.BufferGeometry {
+    if (this.geometryPool.length > 0) {
+      const entry = this.geometryPool.pop()!;
+      entry.lastUsed = this.frameCount;
+      return entry.geometry;
+    }
+    return new THREE.BufferGeometry();
+  }
 
-      for (let s = 0; s < capSegments; s++) {
-        const angle = (s / capSegments) * Math.PI * 2;
-        const rx = p.x + Math.cos(angle) * width;
-        const ry = p.y + Math.sin(angle) * width;
-        const ringIdx = writeVertex(rx, ry, p.z ?? 0);
+  private evictPool(): void {
+    const threshold = this.frameCount - 600;
+    const toRemove = this.geometryPool.filter(p => p.lastUsed <= threshold);
+    for (const p of toRemove) {
+      p.geometry.dispose();
+    }
+    this.geometryPool = this.geometryPool.filter(p => p.lastUsed > threshold);
+  }
 
-        if (s === 0) {
-          firstRing = ringIdx;
-        } else {
-          indices[idx++] = centerIdx;
-          indices[idx++] = prevRing;
-          indices[idx++] = ringIdx;
-        }
+  private catmullRomSmooth(points: StrokePoint[], segmentsPerSpan: number): StrokePoint[] {
+    if (points.length < 3) return points;
 
-        prevRing = ringIdx;
-      }
+    const result: StrokePoint[] = [points[0]];
+    for (let i = 0; i < points.length - 1; i++) {
+      const p0 = points[Math.max(0, i - 1)];
+      const p1 = points[i];
+      const p2 = points[Math.min(points.length - 1, i + 1)];
+      const p3 = points[Math.min(points.length - 1, i + 2)];
 
-      if (firstRing !== -1 && prevRing !== -1) {
-        indices[idx++] = centerIdx;
-        indices[idx++] = prevRing;
-        indices[idx++] = firstRing;
+      for (let s = 1; s <= segmentsPerSpan; s++) {
+        const t = s / (segmentsPerSpan + 1);
+        const t2 = t * t;
+        const t3 = t2 * t;
+
+        const x = 0.5 * (
+          (2 * p1.x) +
+          (-p0.x + p2.x) * t +
+          (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 +
+          (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3
+        );
+        const y = 0.5 * (
+          (2 * p1.y) +
+          (-p0.y + p2.y) * t +
+          (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 +
+          (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3
+        );
+        result.push({ x, y, z: 0 });
       }
     }
+    result.push(points[points.length - 1]);
+    return result;
+  }
 
-    const geo = new THREE.BufferGeometry();
+  private computeVelocityWidths(points: StrokePoint[], baseWidth: number): number[] {
+    const widths: number[] = [];
+    const maxWidth = baseWidth * 0.008;
+    const minWidth = maxWidth * 0.3;
+
+    for (let i = 0; i < points.length; i++) {
+      if (i === 0 || i === points.length - 1) {
+        widths.push(maxWidth * 0.6);
+        continue;
+      }
+      const dx = points[i].x - points[i - 1].x;
+      const dy = points[i].y - points[i - 1].y;
+      const speed = Math.sqrt(dx * dx + dy * dy);
+      const width = maxWidth - speed * 3;
+      widths.push(Math.max(minWidth, Math.min(maxWidth, width)));
+    }
+
+    for (let i = 1; i < widths.length - 1; i++) {
+      widths[i] = (widths[i - 1] + widths[i] + widths[i + 1]) / 3;
+    }
+
+    return widths;
+  }
+
+  private buildRibbonGeometry(points: StrokePoint[], widths: number[], colorHex: string): THREE.BufferGeometry {
+    if (points.length < 2) return this.acquireGeometry();
+
+    const color = new THREE.Color(colorHex);
+    const count = points.length;
+    const vertCount = count * 2;
+    const idxCount = (count - 1) * 6;
+
+    const positions = new Float32Array(vertCount * 3);
+    const vertColors = new Float32Array(vertCount * 3);
+    const indices = vertCount > 65535 ? new Uint32Array(idxCount) : new Uint16Array(idxCount);
+
+    let vi = 0;
+    let ii = 0;
+
+    const r = color.r, g = color.g, b = color.b;
+
+    for (let i = 0; i < count; i++) {
+      const p = points[i];
+      const w = widths[i];
+
+      let nx: number, ny: number;
+      if (i < count - 1) {
+        const dx = points[i + 1].x - p.x;
+        const dy = points[i + 1].y - p.y;
+        const len = Math.sqrt(dx * dx + dy * dy) || 1;
+        nx = -dy / len;
+        ny = dx / len;
+      } else {
+        const dx = p.x - points[i - 1].x;
+        const dy = p.y - points[i - 1].y;
+        const len = Math.sqrt(dx * dx + dy * dy) || 1;
+        nx = -dy / len;
+        ny = dx / len;
+      }
+
+      const base = vi * 3;
+      positions[base] = p.x + nx * w;
+      positions[base + 1] = p.y + ny * w;
+      positions[base + 2] = p.z;
+      vertColors[base] = r;
+      vertColors[base + 1] = g;
+      vertColors[base + 2] = b;
+
+      const base2 = (vi + 1) * 3;
+      positions[base2] = p.x - nx * w;
+      positions[base2 + 1] = p.y - ny * w;
+      positions[base2 + 2] = p.z;
+      vertColors[base2] = r;
+      vertColors[base2 + 1] = g;
+      vertColors[base2 + 2] = b;
+
+      vi += 2;
+
+      if (i < count - 1) {
+        const a = i * 2;
+        const c = (i + 1) * 2;
+        indices[ii++] = a; indices[ii++] = a + 1; indices[ii++] = c;
+        indices[ii++] = a + 1; indices[ii++] = c + 1; indices[ii++] = c;
+      }
+    }
+
+    const geo = this.acquireGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geo.setAttribute('color', new THREE.BufferAttribute(vertColors, 3));
     geo.setIndex(new THREE.BufferAttribute(indices, 1));
-    geo.computeVertexNormals();
     return geo;
   }
 
   destroy(): void {
     this.clear();
     this.material.dispose();
+    this.glowMaterial.dispose();
     this.scene.remove(this.strokeGroup);
+    this.scene.remove(this.glowGroup);
+    this.geometryPool = [];
   }
 }

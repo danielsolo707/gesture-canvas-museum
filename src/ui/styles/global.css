@@ -33,6 +33,7 @@ canvas {
 
 .ui-overlay {
   position: fixed;
+  inset: 0;
   pointer-events: none;
   z-index: 100;
 }
@@ -44,7 +45,6 @@ canvas {
 .color-indicator {
   position: fixed;
   left: 20px;
-  bottom: 20px;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -56,6 +56,8 @@ canvas {
   border-radius: 100px;
   pointer-events: none;
   z-index: 200;
+  width: auto;
+  height: auto;
 }
 
 .color-indicator-swatch {
@@ -163,8 +165,8 @@ canvas {
 }
 
 .gesture-indicator.drawing { color: #4dabf7; border-color: #4dabf740; }
+.gesture-indicator.cursor { color: #ffd43b; border-color: #ffd43b40; }
 .gesture-indicator.eraser { color: #ffa94d; border-color: #ffa94d40; }
-.gesture-indicator.color_select { color: #ffd43b; border-color: #ffd43b40; }
 .gesture-indicator.clear_canvas { color: #69db7c; border-color: #69db7c40; }
 
 .webcam-status {

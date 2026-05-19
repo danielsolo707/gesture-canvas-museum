@@ -1,8 +1,20 @@
-import { FilterConfig, OneEuroFilterState } from './types';
 import { SMOOTHING } from '../core/constants';
 
+export interface FilterConfig {
+  minCutoff: number;
+  beta: number;
+  dCutoff: number;
+}
+
+interface FilterState {
+  prevValue: number;
+  prevDerivative: number;
+  prevTimestamp: number;
+  initialized: boolean;
+}
+
 export class OneEuroFilter {
-  private states = new Map<string, Map<string, OneEuroFilterState>>();
+  private states = new Map<string, Map<string, FilterState>>();
   private config: FilterConfig;
 
   constructor(config?: Partial<FilterConfig>) {
@@ -13,7 +25,7 @@ export class OneEuroFilter {
     };
   }
 
-  private getState(handId: string, landmarkIndex: number, axis: 'x' | 'y' | 'z'): OneEuroFilterState {
+  private getState(handId: string, landmarkIndex: number, axis: 'x' | 'y' | 'z'): FilterState {
     let handStates = this.states.get(handId);
     if (!handStates) {
       handStates = new Map();
@@ -22,24 +34,15 @@ export class OneEuroFilter {
     const key = `${landmarkIndex}:${axis}`;
     let state = handStates.get(key);
     if (!state) {
-      state = {
-        prevValue: 0,
-        prevDerivative: 0,
-        prevTimestamp: 0,
-        initialized: false,
-      };
+      state = { prevValue: 0, prevDerivative: 0, prevTimestamp: 0, initialized: false };
       handStates.set(key, state);
     }
     return state;
   }
 
   private smoothingFactor(cutoff: number, delta: number): number {
-    const r = 2 * Math.PI * cutoff * delta;
+    const r = 2 * Math.PI * cutoff * (delta / 1000);
     return r / (r + 1);
-  }
-
-  private exponentialSmoothing(value: number, prevValue: number, factor: number): number {
-    return prevValue + factor * (value - prevValue);
   }
 
   filter(
@@ -51,16 +54,18 @@ export class OneEuroFilter {
   ): number {
     const state = this.getState(handId, landmarkIndex, axis);
     const delta = state.initialized
-      ? Math.max(timestamp - state.prevTimestamp, 0.0001)
-      : 1 / 60;
+      ? Math.max(timestamp - state.prevTimestamp, 0.001)
+      : 16.67;
 
-    const cutoff = this.config.minCutoff + this.config.beta * Math.abs(state.prevDerivative);
+    const speed = this.estimateSpeed(state, delta);
+    const adaptiveBeta = this.config.beta * (1 + speed * 0.3);
+    const cutoff = this.config.minCutoff + adaptiveBeta * Math.abs(state.prevDerivative);
     const alpha = this.smoothingFactor(cutoff, delta);
-    const smoothed = this.exponentialSmoothing(value, state.prevValue, alpha);
+    const smoothed = state.prevValue + alpha * (value - state.prevValue);
 
     const derivative = (smoothed - state.prevValue) / delta;
     const dAlpha = this.smoothingFactor(this.config.dCutoff, delta);
-    const smoothedDerivative = this.exponentialSmoothing(derivative, state.prevDerivative, dAlpha);
+    const smoothedDerivative = state.prevDerivative + dAlpha * (derivative - state.prevDerivative);
 
     state.prevValue = smoothed;
     state.prevDerivative = smoothedDerivative;
@@ -68,6 +73,10 @@ export class OneEuroFilter {
     state.initialized = true;
 
     return smoothed;
+  }
+
+  private estimateSpeed(state: FilterState, _delta: number): number {
+    return Math.abs(state.prevDerivative);
   }
 
   filterLandmarks(

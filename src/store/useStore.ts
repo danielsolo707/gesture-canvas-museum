@@ -6,6 +6,8 @@ import {
   EngineState,
   EngineMode,
   Handedness,
+  GestureDebugInfo,
+  CursorState,
 } from '../core/types';
 import { PALETTE_HEXES } from '../features/colors/ColorPalette';
 
@@ -26,23 +28,28 @@ export interface AppStore {
   rightHandGesture: GestureType;
   gestureConfidence: number;
   lastGestureEvent: GestureEvent | null;
-  clearProgress: number;
   setGesture: (type: GestureType, hand: 'Left' | 'Right', confidence: number) => void;
-  setClearProgress: (progress: number) => void;
+
+  gestureDebug: GestureDebugInfo | null;
+  setGestureDebug: (info: GestureDebugInfo) => void;
 
   strokes: StrokeData[];
   strokeCount: number;
   isDrawing: boolean;
+  isErasing: boolean;
   addStroke: (stroke: StrokeData) => void;
   removeStroke: (id: string) => void;
   clearAllStrokes: () => void;
   setIsDrawing: (drawing: boolean) => void;
+  setIsErasing: (erasing: boolean) => void;
 
   engineState: EngineState;
   mode: EngineMode;
   showToolbar: boolean;
   colorPaletteActive: boolean;
   showPerformance: boolean;
+  showDebug: boolean;
+  cursorMode: boolean;
   webcamReady: boolean;
   webcamError: string | null;
   setEngineState: (state: EngineState) => void;
@@ -52,6 +59,8 @@ export interface AppStore {
   toggleToolbar: () => void;
   setColorPaletteActive: (active: boolean) => void;
   togglePerformance: () => void;
+  toggleDebug: () => void;
+  setCursorMode: (active: boolean) => void;
 
   color: string;
   strokeWidth: number;
@@ -61,12 +70,13 @@ export interface AppStore {
   colorHoverIndex: number | null;
   cursorX: number | null;
   cursorY: number | null;
+  cursorState: CursorState | null;
   setColor: (color: string) => void;
   setStrokeWidth: (width: number) => void;
   setEraserSize: (size: number) => void;
   selectPaletteIndex: (index: number) => void;
   setColorHoverIndex: (index: number | null) => void;
-  setCursor: (x: number | null, y: number | null) => void;
+  setCursor: (x: number | null, y: number | null, state?: CursorState) => void;
 }
 
 export const useStore = create<AppStore>()((set, get) => ({
@@ -80,7 +90,6 @@ export const useStore = create<AppStore>()((set, get) => ({
   rightHandGesture: 'idle',
   gestureConfidence: 0,
   lastGestureEvent: null,
-  clearProgress: 0,
   setGesture: (type, hand, confidence) => {
     const state = get();
     const leftHand = hand === 'Left' ? type : state.leftHandGesture;
@@ -94,22 +103,28 @@ export const useStore = create<AppStore>()((set, get) => ({
       lastGestureEvent: { type, hand, confidence, timestamp: Date.now() },
     });
   },
-  setClearProgress: (clearProgress) => set({ clearProgress }),
+
+  gestureDebug: null,
+  setGestureDebug: (gestureDebug) => set({ gestureDebug }),
 
   strokes: [],
   strokeCount: 0,
   isDrawing: false,
+  isErasing: false,
   addStroke: (stroke) =>
     set((s) => ({ strokes: [...s.strokes, stroke], strokeCount: s.strokeCount + 1 })),
   removeStroke: (id) => set((s) => ({ strokes: s.strokes.filter((st) => st.id !== id) })),
   clearAllStrokes: () => set({ strokes: [], strokeCount: 0 }),
   setIsDrawing: (isDrawing) => set({ isDrawing }),
+  setIsErasing: (isErasing) => set({ isErasing }),
 
   engineState: 'uninitialized',
   mode: 'camera',
   showToolbar: true,
   colorPaletteActive: false,
   showPerformance: false,
+  showDebug: false,
+  cursorMode: false,
   webcamReady: false,
   webcamError: null,
   setEngineState: (engineState) => set({ engineState }),
@@ -119,6 +134,8 @@ export const useStore = create<AppStore>()((set, get) => ({
   toggleToolbar: () => set((s) => ({ showToolbar: !s.showToolbar })),
   setColorPaletteActive: (colorPaletteActive) => set({ colorPaletteActive }),
   togglePerformance: () => set((s) => ({ showPerformance: !s.showPerformance })),
+  toggleDebug: () => set((s) => ({ showDebug: !s.showDebug })),
+  setCursorMode: (cursorMode) => set({ cursorMode }),
 
   color: PALETTE_HEXES[0],
   strokeWidth: 3,
@@ -128,13 +145,14 @@ export const useStore = create<AppStore>()((set, get) => ({
   colorHoverIndex: null,
   cursorX: null,
   cursorY: null,
+  cursorState: null,
   setColor: (color) => set({ color }),
   setStrokeWidth: (strokeWidth) => set({ strokeWidth }),
   setEraserSize: (eraserSize) => set({ eraserSize }),
   selectPaletteIndex: (selectedPaletteIndex) =>
     set({ selectedPaletteIndex, color: PALETTE_HEXES[selectedPaletteIndex] }),
   setColorHoverIndex: (colorHoverIndex) => set({ colorHoverIndex }),
-  setCursor: (cursorX, cursorY) => set({ cursorX, cursorY }),
+  setCursor: (cursorX, cursorY, cursorState) => set({ cursorX, cursorY, cursorState }),
 }));
 
 export function getStore(): AppStore {

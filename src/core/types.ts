@@ -27,29 +27,18 @@ export const LANDMARKS_FLOAT_SIZE = NUM_LANDMARKS * 3;
 
 export type Handedness = 'Left' | 'Right';
 
-export interface HandGestureInfo {
-  isFist?: boolean;
-  isPointing?: boolean;
-  isOpenPalm?: boolean;
-  isPeace?: boolean;
-  isThreeFinger?: boolean;
-}
+export type GestureType =
+  | 'idle'
+  | 'drawing'
+  | 'cursor'
+  | 'eraser';
 
 export interface HandSnapshot {
   landmarks: Float32Array;
   handedness: Handedness;
   confidence: number;
   timestamp: number;
-  gesture?: HandGestureInfo;
-  indexTip?: { x: number; y: number } | null;
 }
-
-export type GestureType =
-  | 'idle'
-  | 'drawing'
-  | 'color_select'
-  | 'clear_canvas'
-  | 'eraser';
 
 export interface GestureEvent {
   type: GestureType;
@@ -92,6 +81,67 @@ export interface EngineStats {
   activeHands: number;
   strokeCount: number;
   mode: EngineMode;
+  motionSpeed: number;
+  pipelineLatencyMs: number;
+  trackingStability: number;
+  intentConfidence: number;
 }
 
-export type GestureHand = 'Left' | 'Right' | 'Both';
+export interface GestureDebugInfo {
+  activeGesture: GestureType;
+  gestureConfidence: number;
+  motionSpeed: number;
+  stableCount: number;
+  trackingStability: number;
+  intentScore: number;
+  dynamicThreshold: number;
+}
+
+export interface CursorState {
+  x: number;
+  y: number;
+  targetX: number;
+  targetY: number;
+  easedX: number;
+  easedY: number;
+  visible: boolean;
+  isDrawing: boolean;
+  isErasing: boolean;
+  isCursor: boolean;
+  size: number;
+  opacity: number;
+}
+
+export type ActionType =
+  | 'DRAW'
+  | 'CURSOR'
+  | 'ERASE'
+  | 'UNDO'
+  | 'SELECT_COLOR'
+  | 'NEXT_SCENE'
+  | 'PREV_SCENE'
+  | 'IDLE';
+
+export interface Action {
+  type: ActionType;
+  payload?: Record<string, unknown>;
+  timestamp: number;
+  source: GestureType;
+  hand: Handedness;
+  confidence: number;
+}
+
+export interface CalibrationData {
+  scaleFactor: number;
+  offsetVector: [number, number, number];
+  sampleCount: number;
+  wristToTipSpan: number;
+  palmWidth: number;
+}
+
+export interface FramebufferMetrics {
+  frameCount: number;
+  droppedFrames: number;
+  averageFps: number;
+  peakAllocBytes: number;
+}

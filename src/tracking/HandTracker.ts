@@ -1,4 +1,4 @@
-import { HandSnapshot } from '../core/types';
+import { HandSnapshot, Handedness } from '../core/types';
 import { INFERENCE, SMOOTHING } from '../core/constants';
 import { OneEuroFilter } from '../smoothing/OneEuroFilter';
 import { logger } from '../utils/logging';
@@ -116,21 +116,17 @@ export class HandTracker {
       return;
     }
 
+    if (e.data.type === 'pong') return;
+
     if (e.data.type !== 'result' || !this.pendingWorkerResolve) return;
 
-    const hands = this.processRawResult(e.data.landmarks, e.data.handedness, e.data.timestamp);
+    const hands = this.processBinaryFrame(e.data.buf, e.data.handedness, e.data.timestamp);
     this.workerBusy = false;
 
     this.prevHands = this.lastHands;
     this.prevHandsAt = this.lastHandsAt;
     this.lastHands = hands;
     this.lastHandsAt = e.data.timestamp;
-
-    if (hands.length > 0) {
-      logger.info('HandTracker detected hands', {
-        hands: hands.map((h: HandSnapshot) => ({ handedness: h.handedness, confidence: h.confidence })),
-      });
-    }
 
     this.pendingWorkerResolve(hands);
     this.pendingWorkerResolve = null;
@@ -151,7 +147,7 @@ export class HandTracker {
   private async detectWithWorker(video: HTMLVideoElement, now: number): Promise<HandSnapshot[]> {
     if (video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) return [];
 
-    if (this.workerBusy || now - this.lastDetect < INFERENCE.MIN_INTERVAL_MS) {
+    if (this.workerBusy || now - this.lastDetect < 16) {
       return this.getExtrapolatedHands(now);
     }
 
@@ -186,7 +182,7 @@ export class HandTracker {
     if (!this.landmarker) return [];
     if (video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) return [];
 
-    if (now - this.lastDetect < INFERENCE.MIN_INTERVAL_MS) {
+    if (now - this.lastDetect < 16) {
       return this.getExtrapolatedHands(now);
     }
     this.lastDetect = now;
@@ -221,7 +217,7 @@ export class HandTracker {
   private getExtrapolatedHands(now: number): HandSnapshot[] {
     if (this.lastHands.length === 0) return [];
     if (this.prevHands.length === 0) return this.lastHands;
-    if (now - this.lastHandsAt > INFERENCE.CACHED_HAND_MAX_AGE_MS * 2) return [];
+    if (now - this.lastHandsAt > INFERENCE.STALE_FRAME_MS) return [];
 
     const dt = this.lastHandsAt - this.prevHandsAt;
     if (dt <= 0) return this.lastHands;
@@ -279,15 +275,21 @@ export class HandTracker {
         }
       }
 
-      if (matchedPrev >= 0 && bestDist <= INFERENCE.HAND_MATCH_DISTANCE) {
+      if (matchedPrev >= 0 && bestDist <= 0.28) {
         usedPrev.add(matchedPrev);
       } else {
         matchedPrev = -1;
       }
 
       const detected = rawHandedness[i]?.displayName;
-      const detectedHandedness = detected === 'Left' ? 'Right' : (detected === 'Right' ? 'Left' : 'Right');
-      const handedness = matchedPrev >= 0 ? this.lastHands[matchedPrev].handedness : detectedHandedness;
+      let detectedHandedness: Handedness = (detected === 'Left' || detected === 'Right') ? detected : 'Right';
+      // Image is mirrored → flip MediaPipe's handedness label
+      detectedHandedness = detectedHandedness === 'Left' ? 'Right' : 'Left';
+      const handedness: Handedness = matchedPrev >= 0
+        ? this.lastHands[matchedPrev].handedness
+        : (this.lastHands.length === 1 && rawLandmarks.length === 1
+          ? this.lastHands[0].handedness
+          : detectedHandedness);
       const handId = matchedPrev >= 0 ? `track:${matchedPrev}` : `track:${i}`;
 
       const filtered = this.filter.filterLandmarks(handId, raw, timestamp);
@@ -301,8 +303,96 @@ export class HandTracker {
     });
   }
 
+  private processBinaryFrame(
+    buf: ArrayBuffer,
+    rawHandedness: Array<{ displayName?: string; score?: number }>,
+    timestamp: number,
+  ): HandSnapshot[] {
+    if (!buf) return [];
+
+    const view = new DataView(buf);
+    const numHands = view.getUint32(0, true);
+    if (numHands === 0) return [];
+
+    const FLOATS_PER_HAND = 63;
+    const floatView = new Float32Array(buf, 4, numHands * FLOATS_PER_HAND);
+
+    const prevCenters = this.lastHands.map((hand) => this.getLandmarkCenter(hand.landmarks));
+    const usedPrev = new Set<number>();
+    const result: HandSnapshot[] = [];
+
+    for (let h = 0; h < numHands; h++) {
+      const base = h * FLOATS_PER_HAND;
+      const raw = new Float32Array(FLOATS_PER_HAND);
+      for (let i = 0; i < FLOATS_PER_HAND; i++) {
+        raw[i] = floatView[base + i];
+      }
+
+      const rawCenter = this.getLandmarkCenter(raw);
+      let matchedPrev = -1;
+      let bestDist = Number.POSITIVE_INFINITY;
+      for (let j = 0; j < prevCenters.length; j++) {
+        if (usedPrev.has(j)) continue;
+        const dx = rawCenter.x - prevCenters[j].x;
+        const dy = rawCenter.y - prevCenters[j].y;
+        const dist = Math.hypot(dx, dy);
+        if (dist < bestDist) {
+          bestDist = dist;
+          matchedPrev = j;
+        }
+      }
+
+      if (matchedPrev >= 0 && bestDist <= 0.28) {
+        usedPrev.add(matchedPrev);
+      } else {
+        matchedPrev = -1;
+      }
+
+      const detected = rawHandedness[h]?.displayName;
+      const detectedHandedness = (detected === 'Left' || detected === 'Right') ? detected : 'Right';
+      const handedness = matchedPrev >= 0
+        ? this.lastHands[matchedPrev].handedness
+        : (this.lastHands.length === 1 && numHands === 1
+          ? this.lastHands[0].handedness
+          : detectedHandedness);
+      const handId = matchedPrev >= 0 ? `track:${matchedPrev}` : `track:${h}`;
+      const confidence = rawHandedness[h]?.score ?? 1;
+
+      const filtered = this.filter.filterLandmarks(handId, raw, timestamp);
+
+      result.push({
+        landmarks: filtered,
+        handedness,
+        confidence,
+        timestamp,
+      });
+    }
+
+    return result;
+  }
+
   isInitialized(): boolean {
     return this.initialized;
+  }
+
+  getMirrorCanvas(): HTMLCanvasElement | null {
+    return this.mirrorCanvas;
+  }
+
+  prepareMirrorCanvas(width: number, height: number): void {
+    if (!this.mirrorCanvas) {
+      this.mirrorCanvas = document.createElement('canvas');
+      this.mirrorCtx = this.mirrorCanvas.getContext('2d', { alpha: false });
+    }
+    if (this.mirrorCanvas.width !== width || this.mirrorCanvas.height !== height) {
+      this.mirrorCanvas.width = width;
+      this.mirrorCanvas.height = height;
+    }
+    // Fill with a placeholder in case the first frame hasn't arrived yet
+    if (this.mirrorCtx) {
+      this.mirrorCtx.fillStyle = '#000';
+      this.mirrorCtx.fillRect(0, 0, width, height);
+    }
   }
 
   destroy(): void {
@@ -347,7 +437,7 @@ export class HandTracker {
         runningMode: 'VIDEO',
         numHands: INFERENCE.MAX_HANDS,
         minHandDetectionConfidence: INFERENCE.MIN_HAND_DETECTION_CONFIDENCE,
-        minTrackingConfidence: INFERENCE.MIN_HAND_TRACKING_CONFIDENCE,
+        minTrackingConfidence: INFERENCE.MIN_TRACKING_CONFIDENCE,
       }) as HandLandmarkerInstance;
 
       this.initialized = true;

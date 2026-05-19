@@ -46,16 +46,12 @@ export function useEngine() {
       if (hands.length === 0) {
         useStore.getState().setGesture('idle', 'Left', 0);
         useStore.getState().setGesture('idle', 'Right', 0);
-        useStore.getState().setClearProgress(0);
       }
       useStore.getState().setWebcamReady(true);
     });
 
     const unsubGesture = globalEventBus.on('gesture', (event: GestureEvent) => {
       useStore.getState().setGesture(event.type, event.hand as 'Left' | 'Right', event.confidence);
-      if (event.type !== 'clear_canvas') {
-        useStore.getState().setClearProgress(0);
-      }
     });
 
     if (staleIntervalRef.current === null) {
@@ -64,12 +60,11 @@ export function useEngine() {
         if (now - lastHandUpdateRef.current < 900) return;
 
         const state = useStore.getState();
-        if (state.hands.length === 0 && state.currentGesture === 'idle' && state.clearProgress === 0) return;
+        if (state.hands.length === 0 && state.currentGesture === 'idle') return;
 
         useStore.getState().setHands([]);
         useStore.getState().setGesture('idle', 'Left', 0);
         useStore.getState().setGesture('idle', 'Right', 0);
-        useStore.getState().setClearProgress(0);
       }, 300);
     }
 

@@ -1,10 +1,8 @@
 import * as THREE from 'three';
 import { RENDER } from '../core/constants';
 import { globalEventBus } from '../core/EventBus';
-import { HandSnapshot, StrokeData, GestureEvent } from '../core/types';
+import { StrokeData, GestureEvent } from '../core/types';
 import { StrokeRenderer } from './StrokeRenderer';
-import { HandOverlay } from './HandOverlay';
-import { GestureIndicator3D } from './GestureIndicator3D';
 import { ClearEffect } from './ClearEffect';
 import { logger } from '../utils/logging';
 
@@ -14,14 +12,13 @@ export class SceneManager {
   private scene: THREE.Scene | null = null;
   private camera: THREE.OrthographicCamera | null = null;
   private strokeRenderer: StrokeRenderer | null = null;
-  private handOverlay: HandOverlay | null = null;
-  private gestureIndicator: GestureIndicator3D | null = null;
   private clearEffect: ClearEffect | null = null;
   private videoBg: THREE.Mesh | null = null;
-  private videoTexture: THREE.VideoTexture | null = null;
+  private videoTexture: THREE.Texture | null = null;
   private initialized = false;
   private resizeObserver: ResizeObserver | null = null;
   private cleanupFns: (() => void)[] = [];
+  private videoNeedsUpdate = false;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -32,12 +29,12 @@ export class SceneManager {
 
     this.renderer = new THREE.WebGLRenderer({
       canvas: this.canvas,
-      antialias: true,
+      antialias: false,
       alpha: false,
       powerPreference: 'high-performance',
     });
 
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     this.renderer.setClearColor(RENDER.BG_COLOR, 1);
 
     this.scene = new THREE.Scene();
@@ -55,8 +52,6 @@ export class SceneManager {
     this.camera.position.z = 5;
 
     this.strokeRenderer = new StrokeRenderer(this.scene);
-    this.handOverlay = new HandOverlay(this.scene);
-    this.gestureIndicator = new GestureIndicator3D(this.scene);
     this.clearEffect = new ClearEffect(this.scene);
 
     this.wireEvents();
@@ -68,7 +63,7 @@ export class SceneManager {
     logger.info('SceneManager initialized');
   }
 
-  setVideoBackground(video: HTMLVideoElement): void {
+  setVideoBackground(mirroredCanvas: HTMLCanvasElement): void {
     if (!this.scene) return;
 
     if (this.videoTexture) {
@@ -80,19 +75,14 @@ export class SceneManager {
       (this.videoBg.material as THREE.Material)?.dispose();
     }
 
-    this.videoTexture = new THREE.VideoTexture(video);
-    this.videoTexture.wrapS = THREE.RepeatWrapping;
-    this.videoTexture.wrapT = THREE.ClampToEdgeWrapping;
-    this.videoTexture.repeat.x = -1;
-    this.videoTexture.offset.x = 1;
+    this.videoTexture = new THREE.CanvasTexture(mirroredCanvas);
     this.videoTexture.colorSpace = THREE.SRGBColorSpace;
 
     const aspect = this.canvas.clientWidth / this.canvas.clientHeight;
     const geo = new THREE.PlaneGeometry(aspect * 2, 2);
     const mat = new THREE.MeshBasicMaterial({
       map: this.videoTexture,
-      transparent: true,
-      opacity: 0.5,
+      transparent: false,
       depthWrite: false,
       side: THREE.DoubleSide,
     });
@@ -100,15 +90,10 @@ export class SceneManager {
     this.videoBg.renderOrder = -1;
     this.videoBg.position.z = -1;
     this.scene.add(this.videoBg);
+    this.videoNeedsUpdate = true;
   }
 
   private wireEvents(): void {
-    this.cleanupFns.push(
-      globalEventBus.on('hand_update', ({ hands }: { hands: HandSnapshot[] }) => {
-        this.handOverlay?.setHands(hands);
-      }),
-    );
-
     this.cleanupFns.push(
       globalEventBus.on('stroke_added', (stroke: StrokeData) => {
         this.strokeRenderer?.addStroke(stroke);
@@ -124,19 +109,6 @@ export class SceneManager {
     this.cleanupFns.push(
       globalEventBus.on('stroke_erased', ({ strokeId }: { strokeId: string }) => {
         this.strokeRenderer?.removeStroke(strokeId);
-      }),
-    );
-
-    this.cleanupFns.push(
-      globalEventBus.on('gesture', (event: GestureEvent) => {
-        this.gestureIndicator?.setGesture(
-          event.type,
-          (event.data as { progress?: number })?.progress ?? 0,
-        );
-        if (event.type === 'clear_canvas' && event.confidence >= 1) {
-          this.clearEffect?.trigger();
-          this.strokeRenderer?.clear();
-        }
       }),
     );
 
@@ -160,14 +132,6 @@ export class SceneManager {
     return this.strokeRenderer;
   }
 
-  getHandOverlay(): HandOverlay | null {
-    return this.handOverlay;
-  }
-
-  getGestureIndicator(): GestureIndicator3D | null {
-    return this.gestureIndicator;
-  }
-
   getClearEffect(): ClearEffect | null {
     return this.clearEffect;
   }
@@ -175,12 +139,18 @@ export class SceneManager {
   render(now: number): void {
     if (!this.renderer || !this.scene || !this.camera) return;
 
+    if (this.videoTexture && this.videoNeedsUpdate) {
+      this.videoTexture.needsUpdate = true;
+      this.videoNeedsUpdate = false;
+    }
     this.strokeRenderer?.update(now);
-    this.handOverlay?.update(now);
-    this.gestureIndicator?.update(now);
     this.clearEffect?.update(now);
 
     this.renderer.render(this.scene, this.camera);
+  }
+
+  markVideoNeedsUpdate(): void {
+    this.videoNeedsUpdate = true;
   }
 
   private handleResize(): void {
@@ -216,8 +186,6 @@ export class SceneManager {
 
     this.resizeObserver?.disconnect();
     this.strokeRenderer?.destroy();
-    this.handOverlay?.destroy();
-    this.gestureIndicator?.destroy();
     this.clearEffect?.destroy();
 
     if (this.videoTexture) {

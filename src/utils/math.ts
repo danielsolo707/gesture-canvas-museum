@@ -69,6 +69,11 @@ export function vec3Sub(
   return [ax - bx, ay - by, az - bz];
 }
 
+export function getLandmark(landmarks: Float32Array, index: number): [number, number, number] {
+  const i = index * 3;
+  return [landmarks[i], landmarks[i + 1], landmarks[i + 2]];
+}
+
 export function randomId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 }

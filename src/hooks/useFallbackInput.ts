@@ -78,6 +78,9 @@ export function useFallbackInput(engine: Engine | null) {
       if (e.code === FALLBACK.UNDO_KEY && (e.ctrlKey || e.metaKey)) {
         strokeEngine.undo();
       }
+      if (e.code === 'KeyD' && !e.ctrlKey && !e.metaKey) {
+        useStore.getState().toggleDebug();
+      }
     };
 
     window.addEventListener('mousedown', onMouseDown);

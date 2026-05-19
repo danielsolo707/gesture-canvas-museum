@@ -11,6 +11,9 @@ export interface EventMap {
   stroke_erased: { strokeId: string };
   undo: void;
   fps_update: number;
+  action: import('./types').Action;
+  calibration_start: { hand: import('./types').Handedness };
+  calibration_done: { hand: import('./types').Handedness; data: import('./types').CalibrationData };
 }
 
 type EventName = keyof EventMap & string;
