@@ -12,6 +12,7 @@ import { PredictiveCursor } from '../utils/PredictiveCursor';
 import { EdgeProximityDetector } from '../tracking/EdgeProximityDetector';
 import { GestureFreezeController } from '../tracking/GestureFreezeController';
 import { SafeInteractionZoneMapper } from '../tracking/SafeInteractionZoneMapper';
+import { ViewportCalibration } from '../tracking/ViewportCalibration';
 import { useStore } from '../store/useStore';
 import { logger } from '../utils/logging';
 import { getLandmark as getLm, distance3D } from '../utils/math';
@@ -70,6 +71,7 @@ export class Engine {
   private freezeController: GestureFreezeController;
   private safeZoneMapper: SafeInteractionZoneMapper;
   private predictiveCursor: PredictiveCursor;
+  private viewportCalibration: ViewportCalibration;
 
   private lastIntegrity: HandIntegrity | null = null;
   private lastEdgeProx: EdgeProximityInfo | null = null;
@@ -92,6 +94,7 @@ export class Engine {
     this.freezeController = new GestureFreezeController();
     this.safeZoneMapper = new SafeInteractionZoneMapper();
     this.predictiveCursor = new PredictiveCursor();
+    this.viewportCalibration = new ViewportCalibration();
   }
 
   getStats(): Readonly<EngineStats> { return this._stats; }
@@ -241,19 +244,40 @@ export class Engine {
 
       this.attractTimer = 0;
       this.idleFadeTimer = 0;
+      this.viewportCalibration.sample(hands);
       this.bus.emit('hand_update', { hands });
 
       if (hands.length > 0) {
-        const primaryHand = hands[0];
-        const freezeState = this.freezeController.update(
-          'idle', 0, integrity ?? this.zeroIntegrity(), edgeProx ?? this.zeroEdgeProx(), now,
-        );
+        const pipelineStart = performance.now();
 
+        // Step 1: Run gesture recognition FIRST to get actual gesture/confidence
         const t2 = performance.now();
-        const result = this.gesture.recognize(hands, now, integrity, edgeProx, freezeState);
+        const initialResult = this.gesture.recognize(hands, now, integrity, edgeProx, null);
         this._stats.gestureMs = performance.now() - t2;
 
-        const pipelineStart = performance.now();
+        // Step 2: Extract primary gesture from result
+        const sortedHands = [...hands].sort((a, b) => getHandCenterX(a) - getHandCenterX(b));
+        let primaryGesture: GestureType | null = null;
+        let primaryConfidence = 0;
+        for (const hand of sortedHands) {
+          const st = initialResult.handStates.get(hand.handedness);
+          if (st && st.type && st.confidence > primaryConfidence) {
+            primaryGesture = st.type;
+            primaryConfidence = st.confidence;
+          }
+        }
+
+        // Step 3: Pass actual gesture + confidence to freeze controller (FIX: was 'idle'/0)
+        const freezeState = this.freezeController.update(
+          primaryGesture ?? 'idle', primaryConfidence,
+          integrity ?? this.zeroIntegrity(),
+          edgeProx ?? this.zeroEdgeProx(), now,
+        );
+
+        // Step 4: If frozen, re-run gesture recognition with freeze state for override
+        const result = freezeState.frozen
+          ? this.gesture.recognize(hands, now, integrity, edgeProx, freezeState)
+          : initialResult;
 
         for (const g of result.events) {
           this.bus.emit('gesture', g);
@@ -267,18 +291,6 @@ export class Engine {
           this._stats.motionSpeed = result.pipelineDebug.motionSpeed;
           this._stats.trackingStability = result.pipelineDebug.trackingStability;
           this._stats.intentConfidence = result.pipelineDebug.intentScore;
-        }
-
-        const sortedHands = [...hands].sort((a, b) => getHandCenterX(a) - getHandCenterX(b));
-
-        let primaryGesture: GestureType | null = null;
-        let primaryConfidence = 0;
-        for (const hand of sortedHands) {
-          const st = result.handStates.get(hand.handedness);
-          if (st && st.type && st.confidence > primaryConfidence) {
-            primaryGesture = st.type;
-            primaryConfidence = st.confidence;
-          }
         }
 
         const effectiveGesture = freezeState.frozen ? freezeState.lastStableGesture : (primaryGesture ?? 'idle');
@@ -303,6 +315,13 @@ export class Engine {
             freezeActive: freezeState.frozen,
             predictionActive: freezeState.frozen && freezeState.lastStableGesture !== 'idle',
             safeZoneActive: (edgeProx?.overall ?? 0) > 0.3,
+            smoothedConfidence: result.pipelineDebug.smoothedConfidence,
+            freezeReason: freezeState.freezeReason,
+            completenessScore: integrity?.score ?? 0,
+            topEdge: edgeProx?.top ?? 0,
+            bottomEdge: edgeProx?.bottom ?? 0,
+            leftEdge: edgeProx?.left ?? 0,
+            rightEdge: edgeProx?.right ?? 0,
           };
           useStore.getState().setGestureDebug(debugInfo);
         }
@@ -315,6 +334,8 @@ export class Engine {
           freezeState.frozen && freezeState.lastStableGesture !== 'idle',
           (edgeProx?.overall ?? 0) > 0.3,
           hands.length === 0,
+          freezeState.freezeReason,
+          result.pipelineDebug?.smoothedConfidence,
         );
 
         for (let i = 0; i < sortedHands.length; i++) {
@@ -363,15 +384,19 @@ export class Engine {
 
         this._stats.pipelineLatencyMs = performance.now() - pipelineStart;
       } else {
+        const lastGesture = this.activeDrawHands.size > 0 ? 'drawing' : 'idle';
         const freezeState = this.freezeController.update(
-          'idle', 0, integrity ?? this.zeroIntegrity(), edgeProx ?? this.zeroEdgeProx(), now,
+          lastGesture, this.cursorState.opacity,
+          integrity ?? this.zeroIntegrity(), edgeProx ?? this.zeroEdgeProx(), now,
         );
         this.lastFreezeState = freezeState;
 
         if (freezeState.frozen && this.activeDrawHands.size > 0) {
           const pred = this.predictiveCursor.getCurrent();
           if (pred) {
-            const safe = this.safeZoneMapper.map(pred.x, pred.y);
+            const decay = Math.max(0.5, 1 - (freezeState.freezeDurationMs / 400) * 0.5);
+            const decayed = this.predictiveCursor.getDecayedPosition(decay);
+            const safe = this.safeZoneMapper.map(decayed.x, decayed.y);
             const freezePoint: StrokePoint = {
               x: (safe.stabilizedX - 0.5) * 2 * (this.config.canvas.clientWidth / this.config.canvas.clientHeight),
               y: -(safe.stabilizedY - 0.5) * 2,
@@ -380,6 +405,8 @@ export class Engine {
             for (const handKey of this.activeDrawHands) {
               this.drawing.extendStroke(handKey, freezePoint);
             }
+            this.cursorState.easedX = decayed.x;
+            this.cursorState.easedY = decayed.y;
           }
 
           this.cursorState.isDrawing = true;
@@ -430,7 +457,11 @@ export class Engine {
   }
 
   private zeroEdgeProx(): EdgeProximityInfo {
-    return { left: 0, right: 0, top: 0, bottom: 0, overall: 0, dampingFactor: 1 };
+    return {
+      left: 0, right: 0, top: 0, bottom: 0, overall: 0,
+      dampingFactor: 1, gestureSensitivity: 1, cursorDamping: 1,
+      perEdgeConfidence: { left: 1, right: 1, top: 1, bottom: 1 },
+    };
   }
 
   private processIdleTimers(now: number, _delta: number): void {
@@ -461,6 +492,7 @@ export class Engine {
 
       this.cursorState.easedX += dx * easeFactor;
       this.cursorState.easedY += dy * easeFactor;
+      this.cursorState.easedY = Math.max(this.cursorState.easedY, INTERACTION.UI_TOP_MARGIN);
 
       this.cursorState.x = this.cursorState.easedX;
       this.cursorState.y = this.cursorState.easedY;
@@ -491,6 +523,26 @@ export class Engine {
       useStore.getState().setCursorMode(gestureType === 'cursor');
     } else {
       this.cursorFadeTimer++;
+
+      // Use predictive cursor during tracking loss
+      if (this.lastFreezeState?.frozen) {
+        const pred = this.predictiveCursor.getCurrent();
+        if (pred) {
+          const decay = Math.max(0.3, 1 - (this.lastFreezeState.freezeDurationMs / 400) * 0.7);
+          const decayed = this.predictiveCursor.getDecayedPosition(decay);
+          this.cursorState.easedX = decayed.x;
+          this.cursorState.easedY = decayed.y;
+          this.cursorState.targetX = decayed.x;
+          this.cursorState.targetY = decayed.y;
+          this.cursorState.x = decayed.x;
+          this.cursorState.y = decayed.y;
+          this.cursorState.visible = true;
+          this.cursorState.opacity = Math.max(0.2, this.cursorState.opacity - 0.02);
+          useStore.getState().setCursor(this.cursorState.easedX, this.cursorState.easedY, this.cursorState);
+          return;
+        }
+      }
+
       if (this.cursorState.visible && this.cursorFadeTimer < 20) {
         this.cursorState.opacity = Math.max(0.1, this.cursorState.opacity - 0.03);
         this.freezePredictedPos = this.freezePredictedPos ?? {

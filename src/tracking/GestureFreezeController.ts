@@ -1,6 +1,5 @@
-import { GestureType } from '../core/types';
+import { GestureType, EdgeProximityInfo } from '../core/types';
 import { FREEZE } from '../core/constants';
-import { EdgeProximity } from './EdgeProximityDetector';
 import { IntegrityResult } from './HandIntegrityValidator';
 
 export interface FreezeState {
@@ -52,11 +51,13 @@ export class GestureFreezeController {
     gesture: GestureType,
     confidence: number,
     integrity: IntegrityResult,
-    edgeProx: EdgeProximity,
+    edgeProx: EdgeProximityInfo,
     now: number,
   ): FreezeState {
-    const shouldFreeze = integrity.score < this.freezeIntegrityThreshold
-      || edgeProx.overall > this.freezeEdgeThreshold;
+    const lowIntegrity = integrity.score < this.freezeIntegrityThreshold;
+    const nearEdge = edgeProx.overall > this.freezeEdgeThreshold;
+    const lowConfidence = confidence < 0.3;
+    const shouldFreeze = lowIntegrity || nearEdge || lowConfidence;
 
     if (this.state.frozen) {
       const elapsed = now - this.state.freezeStartTime;
@@ -64,10 +65,12 @@ export class GestureFreezeController {
       if (elapsed > this.maxFreezeMs) {
         this.forceUnfreeze('max_duration');
         this.consecutiveStable = 0;
+        return this.state;
       }
 
       const canUnfreeze = integrity.score >= this.unfreezeIntegrity
-        && edgeProx.overall <= this.unfreezeEdge;
+        && edgeProx.overall <= this.unfreezeEdge
+        && confidence >= 0.35;
 
       if (canUnfreeze) {
         this.consecutiveStable++;
@@ -97,9 +100,12 @@ export class GestureFreezeController {
       this.state.freezeCount++;
       this.state.blendProgress = 0;
       this.state.unfreezeReason = '';
-      this.state.freezeReason = integrity.score < this.freezeIntegrityThreshold
-        ? 'low_integrity'
-        : 'edge_proximity';
+
+      if (lowIntegrity) this.state.freezeReason = 'low_integrity';
+      else if (nearEdge) this.state.freezeReason = 'edge_proximity';
+      else if (lowConfidence) this.state.freezeReason = 'low_confidence';
+      else this.state.freezeReason = 'unknown';
+
       this.consecutiveStable = 0;
     }
 

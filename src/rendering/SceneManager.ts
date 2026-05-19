@@ -32,6 +32,7 @@ export class SceneManager {
       antialias: false,
       alpha: false,
       powerPreference: 'high-performance',
+      preserveDrawingBuffer: true,
     });
 
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
@@ -178,6 +179,12 @@ export class SceneManager {
   private setupResizeObserver(): void {
     this.resizeObserver = new ResizeObserver(() => this.handleResize());
     this.resizeObserver.observe(this.canvas);
+  }
+
+  getScreenshot(format: 'image/jpeg' | 'image/png' = 'image/jpeg', quality = 0.85): string | null {
+    if (!this.renderer || !this.scene || !this.camera) return null;
+    this.renderer.render(this.scene, this.camera);
+    return this.renderer.domElement.toDataURL(format, quality);
   }
 
   destroy(): void {

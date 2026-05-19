@@ -95,6 +95,62 @@ export class HandIntegrityValidator {
     };
   }
 
+  getGestureSpecificScore(gesture: 'drawing' | 'cursor' | 'eraser', integrity: IntegrityResult): number {
+    const group = integrity.requiredGroups[gesture];
+    if (!group) return 0;
+
+    let base = integrity.score;
+
+    switch (gesture) {
+      case 'drawing':
+        base = (integrity.wristVisible ? 0.4 : 0)
+          + (integrity.individualFingers.index ? 0.4 : 0)
+          + (integrity.palmIntact ? 0.2 : 0);
+        break;
+      case 'cursor':
+        base = (integrity.wristVisible ? 0.3 : 0)
+          + (integrity.individualFingers.index ? 0.25 : 0)
+          + (integrity.individualFingers.middle ? 0.25 : 0)
+          + (integrity.palmIntact ? 0.2 : 0);
+        break;
+      case 'eraser':
+        base = (integrity.wristVisible ? 0.1 : 0)
+          + (integrity.individualFingers.thumb ? 0.18 : 0)
+          + (integrity.individualFingers.index ? 0.18 : 0)
+          + (integrity.individualFingers.middle ? 0.18 : 0)
+          + (integrity.individualFingers.ring ? 0.18 : 0)
+          + (integrity.individualFingers.pinky ? 0.18 : 0);
+        break;
+    }
+
+    return Math.max(0, Math.min(1, base));
+  }
+
+  completenessByRegion(landmarks: Float32Array): {
+    topHalf: number; bottomHalf: number; leftHalf: number; rightHalf: number;
+  } {
+    let topCount = 0, bottomCount = 0, leftCount = 0, rightCount = 0;
+    let topValid = 0, bottomValid = 0, leftValid = 0, rightValid = 0;
+
+    for (let i = 0; i < NUM_LANDMARKS; i++) {
+      const lm = getLandmark(landmarks, i);
+      if (!lm) continue;
+      const [x, y] = lm;
+      const valid = !(Math.abs(x) < this.landmarkThreshold && Math.abs(y) < this.landmarkThreshold);
+      if (y < 0.5) { topCount++; if (valid) topValid++; }
+      else { bottomCount++; if (valid) bottomValid++; }
+      if (x < 0.5) { leftCount++; if (valid) leftValid++; }
+      else { rightCount++; if (valid) rightValid++; }
+    }
+
+    return {
+      topHalf: topCount > 0 ? topValid / topCount : 0,
+      bottomHalf: bottomCount > 0 ? bottomValid / bottomCount : 0,
+      leftHalf: leftCount > 0 ? leftValid / leftCount : 0,
+      rightHalf: rightCount > 0 ? rightValid / rightCount : 0,
+    };
+  }
+
   private zeroResult(): IntegrityResult {
     return {
       score: 0,

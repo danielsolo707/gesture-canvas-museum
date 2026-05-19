@@ -1,5 +1,5 @@
 import { NUM_LANDMARKS, LANDMARKS_FLOAT_SIZE, Handedness } from '../core/types';
-import { getLandmark } from '../utils/math';
+import { EXTRAPOLATION } from '../core/constants';
 
 interface PoseFrame {
   landmarks: Float32Array;
@@ -14,15 +14,21 @@ export class OcclusionRecovery {
   private readonly memorySize: number;
   private readonly maxExtrapolationMs: number;
   private readonly decayRate: number;
+  private readonly velocityDamping: number;
+  private readonly driftCap: number;
 
   constructor(
     memorySize = 10,
     maxExtrapolationMs = 400,
     decayRate = 0.15,
+    velocityDamping = EXTRAPOLATION.VELOCITY_DAMPING,
+    driftCap = EXTRAPOLATION.DRIFT_CAP,
   ) {
     this.memorySize = memorySize;
     this.maxExtrapolationMs = maxExtrapolationMs;
     this.decayRate = decayRate;
+    this.velocityDamping = velocityDamping;
+    this.driftCap = driftCap;
   }
 
   recordPose(hand: Handedness, landmarks: Float32Array, confidence: number, now: number): void {
@@ -126,6 +132,29 @@ export class OcclusionRecovery {
     return vel;
   }
 
+  blendWithRecovery(
+    hand: Handedness,
+    rawLandmarks: Float32Array,
+    rawConfidence: number,
+    now: number,
+  ): Float32Array {
+    const memory = this.poseMemory.get(hand);
+    if (!memory || memory.length === 0 || rawConfidence >= 0.5) {
+      return rawLandmarks;
+    }
+
+    const lastStable = memory[memory.length - 1];
+    const elapsed = now - lastStable.timestamp;
+    const blendAlpha = Math.min(1, elapsed / this.maxExtrapolationMs);
+
+    const result = new Float32Array(LANDMARKS_FLOAT_SIZE);
+    for (let i = 0; i < LANDMARKS_FLOAT_SIZE; i++) {
+      result[i] = rawLandmarks[i] * blendAlpha + lastStable.landmarks[i] * (1 - blendAlpha);
+    }
+
+    return result;
+  }
+
   private extrapolatePose(hand: Handedness, lastFrame: PoseFrame, elapsed: number, now: number): PoseFrame {
     const extrapolated = new Float32Array(LANDMARKS_FLOAT_SIZE);
     const t = Math.min(elapsed / 1000, 0.3);
@@ -137,15 +166,21 @@ export class OcclusionRecovery {
       velocity = new Float32Array(LANDMARKS_FLOAT_SIZE);
     }
 
+    const dampedVelocity = new Float32Array(LANDMARKS_FLOAT_SIZE);
     for (let i = 0; i < LANDMARKS_FLOAT_SIZE; i++) {
-      extrapolated[i] = lastFrame.landmarks[i] + velocity[i] * t;
+      dampedVelocity[i] = velocity[i] * this.velocityDamping;
+    }
+
+    for (let i = 0; i < LANDMARKS_FLOAT_SIZE; i++) {
+      const displacement = dampedVelocity[i] * t;
+      extrapolated[i] = lastFrame.landmarks[i] + Math.max(-this.driftCap, Math.min(this.driftCap, displacement));
     }
 
     return {
       landmarks: extrapolated,
       timestamp: now,
       confidence: lastFrame.confidence * 0.8,
-      velocity,
+      velocity: dampedVelocity,
     };
   }
 

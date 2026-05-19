@@ -27,6 +27,7 @@ export class PredictiveCursor {
   private smoothedY = 0;
   private velocityX = 0;
   private velocityY = 0;
+  private predictionConfidence = 0;
 
   constructor(config?: Partial<PredictiveCursorConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -59,6 +60,7 @@ export class PredictiveCursor {
     }
 
     const speed = Math.sqrt(this.velocityX ** 2 + this.velocityY ** 2);
+    this.predictionConfidence = Math.min(1, speed / (speed + 0.01));
 
     let predX = this.smoothedX;
     let predY = this.smoothedY;
@@ -103,11 +105,26 @@ export class PredictiveCursor {
     return { x: this.smoothedX, y: this.smoothedY };
   }
 
+  getPredictionConfidence(): number {
+    return this.predictionConfidence;
+  }
+
+  getDecayedPosition(decayFactor: number): { x: number; y: number } {
+    const current = this.getCurrent();
+    if (!current) return { x: 0.5, y: 0.5 };
+    const centerX = 0.5, centerY = 0.5;
+    return {
+      x: current.x + (centerX - current.x) * (1 - decayFactor),
+      y: current.y + (centerY - current.y) * (1 - decayFactor),
+    };
+  }
+
   reset(): void {
     this.history = [];
     this.smoothedX = 0;
     this.smoothedY = 0;
     this.velocityX = 0;
     this.velocityY = 0;
+    this.predictionConfidence = 0;
   }
 }

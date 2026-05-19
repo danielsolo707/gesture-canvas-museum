@@ -3,6 +3,7 @@ import { Engine, EngineConfig } from '../core/Engine';
 import { globalEventBus } from '../core/EventBus';
 import { useStore } from '../store/useStore';
 import { EngineState, StrokeData, GestureEvent, HandSnapshot } from '../core/types';
+import { KioskMode } from '../utils/KioskMode';
 
 export function useEngine() {
   const engineRef = useRef<Engine | null>(null);
@@ -68,6 +69,19 @@ export function useEngine() {
       }, 300);
     }
 
+    const kiosk = new KioskMode({ fullscreenEnabled: false });
+    kiosk.enable(() => {
+      const s = useStore.getState();
+      s.setGesture('idle', 'Left', 0);
+      s.setGesture('idle', 'Right', 0);
+      s.setCursor(null, null);
+      s.setColorPaletteActive(false);
+      s.setColorHoverIndex(null);
+      s.setIsDrawing(false);
+      s.setIsErasing(false);
+      s.setCursorMode(false);
+    });
+
     await engine.start();
 
     return () => {
@@ -81,6 +95,7 @@ export function useEngine() {
         window.clearInterval(staleIntervalRef.current);
         staleIntervalRef.current = null;
       }
+      kiosk.disable();
     };
   }, []);
 

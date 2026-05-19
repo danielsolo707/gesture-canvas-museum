@@ -15,6 +15,8 @@ export interface RecognizeResult {
 
 export class GestureRecognizer {
   private classifier: GestureClassifier;
+  private lastGesture: GestureType = 'idle';
+  private lastConfidence = 0;
 
   constructor() {
     this.classifier = new GestureClassifier();
@@ -40,6 +42,10 @@ export class GestureRecognizer {
         confidence: state.confidence,
         intentScore: state.intentScore,
       });
+      if (state.confidence > this.lastConfidence) {
+        this.lastGesture = state.gesture;
+        this.lastConfidence = state.confidence;
+      }
     }
 
     return {
@@ -50,7 +56,7 @@ export class GestureRecognizer {
   }
 
   getCurrentGesture(): GestureType {
-    return 'idle';
+    return this.lastGesture;
   }
 
   destroy(): void {

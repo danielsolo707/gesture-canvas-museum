@@ -1,14 +1,17 @@
 import { useStore } from '../../store/useStore';
 import { DEFAULT_PALETTE, PALETTE_HEXES } from '../../features/colors/ColorPalette';
 
+const PERSIAN_NAMES: string[] = [
+  'قرمز مرجانی', 'نارنجی', 'زرد', 'سبز', 'فیروزه‌ای',
+  'آبی آسمانی', 'بنفش کبود', 'ارغوانی', 'صورتی', 'رز', 'سفید', 'نقره‌ای',
+];
+
 export function BottomPalette() {
   const expanded = useStore((s) => s.colorPaletteActive);
   const selectedIndex = useStore((s) => s.selectedPaletteIndex);
   const hoverIndex = useStore((s) => s.colorHoverIndex);
-  const cursorMode = useStore((s) => s.cursorMode);
   const currentColor = PALETTE_HEXES[selectedIndex];
 
-  // Always show a compact color swatch at top-left when not in palette mode
   if (!expanded) {
     return (
       <div className="color-indicator" style={{
@@ -26,14 +29,16 @@ export function BottomPalette() {
         <span className="color-indicator-name" style={{ fontSize: 11, color: '#adb5bd', fontWeight: 600 }}>
           {DEFAULT_PALETTE[selectedIndex]?.name ?? ''}
         </span>
+        <span style={{ fontSize: 10, color: '#6c757d', direction: 'rtl' }}>
+          {PERSIAN_NAMES[selectedIndex] ?? ''}
+        </span>
       </div>
     );
   }
 
-  // Expanded palette at top-left, arranged vertically
   return (
     <div
-      className="bottom-palette"
+      className="bottom-palette expanded"
       style={{
         position: 'fixed', top: 16, left: 16,
         display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 6,
@@ -44,12 +49,10 @@ export function BottomPalette() {
         borderRadius: 16, border: '1px solid rgba(255,255,255,0.1)',
         zIndex: 250, pointerEvents: 'none',
         transition: 'all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)',
-        opacity: expanded ? 1 : 0,
-        transform: expanded ? 'translateX(0) translateY(0)' : 'translateX(-20px) translateY(0)',
       }}
     >
       {DEFAULT_PALETTE.map((c, i) => {
-        const isHover = i === hoverIndex && expanded;
+        const isHover = i === hoverIndex;
         const isActive = i === selectedIndex;
         return (
           <div

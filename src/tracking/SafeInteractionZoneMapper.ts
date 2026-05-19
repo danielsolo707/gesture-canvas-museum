@@ -1,4 +1,4 @@
-import { SAFE_ZONE, EDGE } from '../core/constants';
+import { SAFE_ZONE } from '../core/constants';
 
 export interface SafeZoneResult {
   stabilizedX: number;
@@ -7,6 +7,7 @@ export interface SafeZoneResult {
   rawY: number;
   dampingApplied: boolean;
   isInSafeZone: boolean;
+  edgeFalloff: { x: number; y: number };
 }
 
 export class SafeInteractionZoneMapper {
@@ -34,60 +35,54 @@ export class SafeInteractionZoneMapper {
   }
 
   map(rawX: number, rawY: number): SafeZoneResult {
-    if (rawX < 0 || rawX > 1 || rawY < 0 || rawY > 1) {
-      return {
-        stabilizedX: Math.max(0, Math.min(1, rawX)),
-        stabilizedY: Math.max(0, Math.min(1, rawY)),
-        rawX, rawY,
-        dampingApplied: false,
-        isInSafeZone: false,
-      };
-    }
-
     const isInSafeZone = rawX >= this.innerXMin && rawX <= this.innerXMax
       && rawY >= this.innerYMin && rawY <= this.innerYMax;
 
-    let stabilizedX = this.compressAxis(rawX, this.innerXMin, this.innerXMax, this.compressionStrength);
+    const stabilizedX = this.sigmoidCompress(rawX, this.innerXMin, this.innerXMax, this.compressionStrength);
+    const stabilizedY = this.sigmoidCompress(rawY, this.innerYMin, this.innerYMax, this.bottomCompression);
 
-    const effectiveYMax = this.innerYMax - (1 - this.innerYMax) * this.bottomCompression;
-    const effectiveYMin = this.innerYMin;
-    const totalYRange = effectiveYMax - effectiveYMin;
-    const rawYRange = 1;
-    const yCompression = 1 - (totalYRange / rawYRange);
-    const yStrength = this.compressionStrength * (1 + yCompression * 2);
-
-    let stabilizedY = this.compressAxis(rawY, this.innerYMin, effectiveYMax, yStrength);
-
-    stabilizedX = Math.max(0, Math.min(1, stabilizedX));
-    stabilizedY = Math.max(0, Math.min(1, stabilizedY));
+    const edgeFalloff = {
+      x: this.computeEdgeFalloff(rawX, this.innerXMin, this.innerXMax),
+      y: this.computeEdgeFalloff(rawY, this.innerYMin, this.innerYMax),
+    };
 
     const dampingApplied = stabilizedX !== rawX || stabilizedY !== rawY;
 
-    return { stabilizedX, stabilizedY, rawX, rawY, dampingApplied, isInSafeZone };
+    return {
+      stabilizedX, stabilizedY, rawX, rawY,
+      dampingApplied, isInSafeZone, edgeFalloff,
+    };
   }
 
-  private compressAxis(value: number, innerMin: number, innerMax: number, strength: number): number {
-    const innerWidth = innerMax - innerMin;
-    const outerLeft = innerMin;
-    const outerRight = 1 - innerMax;
-
+  private sigmoidCompress(value: number, innerMin: number, innerMax: number, strength: number): number {
     if (value >= innerMin && value <= innerMax) {
-      const normalized = (value - innerMin) / innerWidth;
-      return innerMin + normalized * innerWidth;
+      return value;
     }
 
     if (value < innerMin) {
-      const t = value / innerMin;
-      const compressed = t * innerMin * (1 - strength * (1 - t));
-      return compressed;
+      const t = (innerMin - value) / innerMin;
+      const compression = this.smoothstep(t) * strength;
+      return innerMin - t * innerMin * compression;
     }
 
+    const outerRight = 1 - innerMax;
+    const t = (value - innerMax) / outerRight;
+    const compression = this.smoothstep(t) * strength;
+    return innerMax + t * outerRight * (1 - compression);
+  }
+
+  private smoothstep(t: number): number {
+    t = Math.max(0, Math.min(1, t));
+    return t * t * (3 - 2 * t);
+  }
+
+  private computeEdgeFalloff(value: number, innerMin: number, innerMax: number): number {
+    if (value < innerMin) {
+      return 1 - Math.max(0, Math.min(1, (innerMin - value) / innerMin));
+    }
     if (value > innerMax) {
-      const t = (value - innerMax) / outerRight;
-      const compressed = t * outerRight * (1 - strength * (1 - t));
-      return innerMax + compressed;
+      return 1 - Math.max(0, Math.min(1, (value - innerMax) / (1 - innerMax)));
     }
-
-    return value;
+    return 1;
   }
 }

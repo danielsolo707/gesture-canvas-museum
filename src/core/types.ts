@@ -15,6 +15,9 @@ export interface EdgeProximityInfo {
   bottom: number;
   overall: number;
   dampingFactor: number;
+  gestureSensitivity: number;
+  cursorDamping: number;
+  perEdgeConfidence: { left: number; right: number; top: number; bottom: number };
 }
 
 export interface GestureFreezeState {
@@ -134,6 +137,13 @@ export interface GestureDebugInfo {
   freezeActive: boolean;
   predictionActive: boolean;
   safeZoneActive: boolean;
+  smoothedConfidence?: number;
+  freezeReason?: string;
+  completenessScore?: number;
+  topEdge: number;
+  bottomEdge: number;
+  leftEdge: number;
+  rightEdge: number;
 }
 
 export interface CursorState {
@@ -176,3 +186,37 @@ export interface FramebufferMetrics {
   averageFps: number;
   peakAllocBytes: number;
 }
+
+export interface ConfidenceState {
+  raw: number;
+  smoothed: number;
+  decayRate: number;
+  lastUpdate: number;
+  history: number[];
+}
+
+export interface CalibrationData {
+  bottomEdgeOffset: number;
+  perspectiveSkewX: number;
+  perspectiveSkewY: number;
+  cameraTilt: number;
+  viewportAspectCorrection: number;
+}
+
+export interface DebugOverlayState {
+  showConfidence: boolean;
+  showEdgeZones: boolean;
+  showSafeZone: boolean;
+  showIntegrity: boolean;
+  showCalibration: boolean;
+  showFreezeState: boolean;
+  showPrediction: boolean;
+}
+
+export const DEFAULT_CALIBRATION: CalibrationData = {
+  bottomEdgeOffset: 0,
+  perspectiveSkewX: 0,
+  perspectiveSkewY: 0,
+  cameraTilt: 0,
+  viewportAspectCorrection: 1,
+};

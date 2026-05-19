@@ -3,8 +3,9 @@ import { FeatureExtractor } from '../features/FeatureExtractor';
 import { HandFeatures } from '../features/types';
 import { OcclusionRecovery } from './OcclusionRecovery';
 import { AdaptiveThresholds } from './AdaptiveThresholds';
+import { ConfidenceTracker } from '../tracking/ConfidenceTracker';
 import { Handedness, GestureType, GestureEvent, HandSnapshot, HandIntegrity, EdgeProximityInfo, GestureFreezeState } from '../core/types';
-import { OCCLUSION, ADAPTIVE, GESTURE, FREEZE } from '../core/constants';
+import { OCCLUSION, ADAPTIVE, GESTURE, CONFIDENCE } from '../core/constants';
 import { globalEventBus } from '../core/EventBus';
 import { logger } from '../utils/logging';
 
@@ -18,6 +19,7 @@ export interface GesturePipelineResult {
     intentScore: number;
     dynamicThreshold: number;
     occlusionRecovered: boolean;
+    smoothedConfidence: number;
   };
 }
 
@@ -35,6 +37,7 @@ export class GestureClassifier {
   }>;
   private occlusionRecovery: OcclusionRecovery;
   private adaptiveThresholds: AdaptiveThresholds;
+  private confidenceTracker: ConfidenceTracker;
   private gestureCooldowns = new Map<string, number>();
   private initialized = false;
 
@@ -55,6 +58,7 @@ export class GestureClassifier {
       fastMotionThreshold: ADAPTIVE.FAST_MOTION_THRESHOLD,
       slowMotionThreshold: ADAPTIVE.SLOW_MOTION_THRESHOLD,
     });
+    this.confidenceTracker = new ConfidenceTracker();
   }
 
   initialize(): void {
@@ -64,6 +68,7 @@ export class GestureClassifier {
     this.motionPredictors.clear();
     this.occlusionRecovery.reset();
     this.adaptiveThresholds.reset();
+    this.confidenceTracker.reset();
     this.gestureCooldowns.clear();
     this.initialized = true;
   }
@@ -83,10 +88,12 @@ export class GestureClassifier {
     let debugIntentScore = 0;
     let debugDynamicThreshold = 0;
     let debugOcclusionRecovered = false;
+    let debugSmoothedConfidence = 0;
 
     for (const hand of hands) {
       const rawLandmarks = hand.landmarks;
 
+      // Step 1: Occlusion recovery
       const occlusionResult = this.occlusionRecovery.recover(
         hand.handedness, rawLandmarks, hand.confidence, now,
       );
@@ -98,13 +105,14 @@ export class GestureClassifier {
         );
       }
 
+      // Step 2: Normalize landmarks
       const norm = this.normalizer.normalize(
         occlusionResult.landmarks, hand.handedness, occlusionResult.confidence, now,
       );
 
+      // Step 3: Extract features
       const features = this.featureExtractor.extract(norm, now);
       debugFeatures = features;
-
       const speed = features.speed;
       debugMotionSpeed = speed;
 
@@ -113,15 +121,38 @@ export class GestureClassifier {
       this.adaptiveThresholds.updateTrackingStability(hand.handedness, stability);
       debugTrackingStability = stability;
 
+      // Step 4: Confidence gating
+      const smoothedConfidence = this.confidenceTracker.update(
+        hand.handedness, hand.confidence, now,
+      );
+      debugSmoothedConfidence = smoothedConfidence;
+
       const edgeDamping = edgeProx?.dampingFactor ?? 1;
       const integrityScore = integrity?.score ?? 1;
+      const rawGestureScore = this.getBestGestureScore(
+        integrity ?? { score: 0, wristVisible: false, palmIntact: false, individualFingers: { thumb: false, index: false, middle: false, ring: false, pinky: false }, requiredGroups: { drawing: false, cursor: false, eraser: false }, edgeFlags: { anyEdge: false, leftEdge: false, rightEdge: false, topEdge: false, bottomEdge: false }, missingLandmarkCount: 21 },
+        hand.handedness, features,
+      );
+      const gestureSpecificScore = Math.max(0.3, rawGestureScore);
 
-      const heuristicGesture = this.edgeAwareHeuristicDetect(features, speed, integrity, edgeProx, freezeState);
+      const effectiveConfidence = smoothedConfidence * (0.3 + 0.7 * gestureSpecificScore);
+      const confidenceGate = effectiveConfidence >= CONFIDENCE.GATE_THRESHOLD;
 
-      const rawConfidence = heuristicGesture ? this.computeConfidence(heuristicGesture, features, speed) : 0;
-      const dampedConfidence = rawConfidence * (0.5 + 0.5 * edgeDamping);
-      const heuristicConfidence = heuristicGesture ? dampedConfidence : 0;
+      // Step 5: Heuristic detection with edge-aware thresholds
+      let heuristicGesture: GestureType | null = null;
+      let heuristicConfidence = 0;
 
+      if (confidenceGate) {
+        heuristicGesture = this.edgeAwareHeuristicDetect(
+          features, speed, integrity, edgeProx, freezeState,
+        );
+        if (heuristicGesture) {
+          const rawConf = this.computeConfidence(heuristicGesture, features, speed);
+          heuristicConfidence = rawConf * (0.5 + 0.5 * edgeDamping);
+        }
+      }
+
+      // Step 6: Apply freeze state
       const gestureOverride = freezeState?.frozen ? freezeState.lastStableGesture : null;
       const selectedGesture = gestureOverride ?? heuristicGesture ?? 'idle';
       const selectedConfidence = gestureOverride
@@ -134,20 +165,24 @@ export class GestureClassifier {
       debugDynamicThreshold = dynamicThreshold;
 
       this.adaptiveThresholds.updateConfidence(hand.handedness, selectedConfidence);
-
-      const finalGesture = selectedGesture;
-      const finalConfidence = selectedConfidence;
       debugIntentScore = selectedConfidence;
 
+      // Step 7: Rely on state machine for persistence (3-frame activate / 2-frame deactivate)
       const sm = this.getOrCreateState(hand.handedness);
+      const finalGesture = selectedGesture;
+      const finalConfidence = selectedConfidence;
+
       const gestureChanged = sm.current !== finalGesture;
 
-      const edgePenalty = edgeDamping < 0.6 ? 2 : 0;
+      // Step 8: Extra activation frames near edges or low integrity
+      const edgePenalty = 0;
       const integrityPenalty = integrityScore < 0.6 ? 3 : 0;
-      const extraFrames = edgePenalty + integrityPenalty;
+      const confidencePenalty = smoothedConfidence < 0.5 ? 1 : 0;
+      const extraFrames = edgePenalty + integrityPenalty + confidencePenalty;
 
       this.updateStateMachine(sm, finalGesture, finalConfidence, now, extraFrames);
 
+      // Step 9: Event emission with edge-aware cooldown
       const cooldownKey = `${hand.handedness}:${finalGesture}`;
       const lastFired = this.gestureCooldowns.get(cooldownKey) ?? 0;
       let shouldEmitEvent = false;
@@ -156,7 +191,9 @@ export class GestureClassifier {
         sm.lastChange = sm.current;
       }
       if (finalGesture !== 'idle' && gestureChanged && !freezeState?.frozen) {
-        const effectiveCooldown = GESTURE.COOLDOWN_MS + (edgeDamping < 0.6 ? 100 : 0) + (integrityScore < 0.6 ? 150 : 0);
+        const effectiveCooldown = GESTURE.COOLDOWN_MS
+          + (integrityScore < 0.6 ? 150 : 0)
+          + (smoothedConfidence < 0.5 ? 80 : 0);
         if (now - lastFired >= effectiveCooldown) {
           shouldEmitEvent = true;
           this.gestureCooldowns.set(cooldownKey, now);
@@ -164,19 +201,19 @@ export class GestureClassifier {
       }
 
       handStates.set(hand.handedness, {
-        gesture: finalGesture,
-        confidence: finalConfidence,
+        gesture: sm.current,
+        confidence: sm.confidence,
         stableCount: sm.stableCount,
         intentScore: debugIntentScore,
       });
 
       if (shouldEmitEvent) {
         events.push({
-          type: finalGesture,
+          type: sm.current,
           hand: hand.handedness,
-          confidence: finalConfidence,
+          confidence: sm.confidence,
           timestamp: now,
-          data: { dynamicThreshold, trackingStability: stability },
+          data: { dynamicThreshold, trackingStability: stability, smoothedConfidence },
         });
       }
     }
@@ -191,6 +228,7 @@ export class GestureClassifier {
         intentScore: debugIntentScore,
         dynamicThreshold: debugDynamicThreshold,
         occlusionRecovered: debugOcclusionRecovered,
+        smoothedConfidence: debugSmoothedConfidence,
       },
     };
   }
@@ -225,9 +263,9 @@ export class GestureClassifier {
       sm.deactivationCount = 0;
     } else {
       const effectiveActivate = GESTURE.ACTIVATE_FRAMES + extraFrames;
-      const effectiveDeactivate = GESTURE.DEACTIVATE_FRAMES + (extraFrames > 0 ? 1 : 0);
+      const effectiveDeactivate = GESTURE.DEACTIVATE_FRAMES;
 
-      if (confidence >= 0.5) {
+      if (confidence >= 0.35) {
         sm.activationCount++;
         sm.deactivationCount = 0;
         if (sm.activationCount >= effectiveActivate) {
@@ -258,82 +296,66 @@ export class GestureClassifier {
     edgeProx: EdgeProximityInfo | null | undefined,
     freezeState: GestureFreezeState | null | undefined,
   ): GestureType | null {
-    if (freezeState?.frozen) {
-      return null;
-    }
+    if (freezeState?.frozen) return null;
 
     const o = features.fingerOpenness;
-
     const edgeDamping = edgeProx?.dampingFactor ?? 1;
     const integrityScore = integrity?.score ?? 1;
 
-    const drawingOpennessThreshold = 0.35 + (1 - edgeDamping) * 0.12;
-    const drawingDominanceThreshold = 0.25 + (1 - edgeDamping) * 0.08;
-    const cursorOpennessThreshold = 0.30 + (1 - edgeDamping) * 0.10;
-    const cursorDominanceThreshold = 0.20 + (1 - edgeDamping) * 0.06;
-    const eraserMinOpenness = 0.35 + (1 - edgeDamping) * 0.10;
-    const eraserRatioThreshold = 0.40 + (1 - edgeDamping) * 0.10;
+    const minEdgeConf = edgeProx
+      ? Math.min(
+          edgeProx.perEdgeConfidence?.left ?? 1,
+          edgeProx.perEdgeConfidence?.right ?? 1,
+          edgeProx.perEdgeConfidence?.top ?? 1,
+          edgeProx.perEdgeConfidence?.bottom ?? 1,
+        )
+      : 1;
 
-    if (integrityScore < 0.4) {
-      return null;
-    }
+    const edgePremium = 0;
+
+    const drawingOpennessThreshold = 0.35 + edgePremium * 0.15;
+    const drawingDominanceThreshold = 0.25 + edgePremium * 0.10;
+    const cursorOpennessThreshold = 0.30 + edgePremium * 0.12;
+    const cursorDominanceThreshold = 0.20 + edgePremium * 0.08;
+    const eraserMinOpenness = 0.35 + edgePremium * 0.15;
+    const eraserRatioThreshold = 0.40 + edgePremium * 0.12;
+
+    if (integrityScore < 0.3) return null;
 
     if (o.index >= drawingOpennessThreshold) {
       const othersMax = Math.max(o.thumb, o.middle, o.ring, o.pinky);
       if (o.index - othersMax >= drawingDominanceThreshold) {
-        if (!integrity || integrity.requiredGroups.drawing) {
-          return 'drawing';
-        }
+        if (!integrity || integrity.requiredGroups.drawing) return 'drawing';
       }
     }
 
     if (o.index >= cursorOpennessThreshold && o.middle >= cursorOpennessThreshold) {
       const curledMax = Math.max(o.ring, o.pinky);
       if (o.middle - curledMax >= cursorDominanceThreshold) {
-        if (!integrity || integrity.requiredGroups.cursor) {
-          return 'cursor';
-        }
+        if (!integrity || integrity.requiredGroups.cursor) return 'cursor';
       }
     }
 
     const minOpen = Math.min(o.thumb, o.index, o.middle, o.ring, o.pinky);
     const maxOpen = Math.max(o.thumb, o.index, o.middle, o.ring, o.pinky);
     if (minOpen >= eraserMinOpenness && maxOpen > 0 && (minOpen / maxOpen) >= eraserRatioThreshold) {
-      if (!integrity || integrity.requiredGroups.eraser) {
-        return 'eraser';
-      }
+      if (edgePremium > 0.3 && integrityScore < 0.7) return null;
+      if (!integrity || integrity.requiredGroups.eraser) return 'eraser';
     }
 
     return null;
   }
 
-  private heuristicDetect(features: HandFeatures, _motionSpeed: number): GestureType | null {
-    const o = features.fingerOpenness;
-
-    // 1. Drawing: index finger only extended, ALL other fingers (including thumb) curled
-    if (o.index >= 0.35) {
-      const othersMax = Math.max(o.thumb, o.middle, o.ring, o.pinky);
-      if (o.index - othersMax >= 0.25) {
-        return 'drawing';
-      }
-    }
-
-    // 2. Cursor: index + middle extended, ring + pinky curled
-    if (o.index >= 0.30 && o.middle >= 0.30) {
-      const curledMax = Math.max(o.ring, o.pinky);
-      if (o.middle - curledMax >= 0.20) {
-        return 'cursor';
-      }
-    }
-
-    // 3. Eraser: all 5 fingers clearly open
-    const minOpen = Math.min(o.thumb, o.index, o.middle, o.ring, o.pinky);
-    const maxOpen = Math.max(o.thumb, o.index, o.middle, o.ring, o.pinky);
-    if (minOpen >= 0.35 && maxOpen > 0 && (minOpen / maxOpen) >= 0.40) {
-      return 'eraser';
-    }
-
-    return null;
+  private getBestGestureScore(
+    integrity: HandIntegrity,
+    _hand: Handedness,
+    _features: HandFeatures,
+  ): number {
+    const fingerCount = Object.values(integrity.individualFingers).filter(Boolean).length;
+    if (fingerCount >= 4 && integrity.wristVisible) return 1;
+    if (fingerCount >= 2 && integrity.wristVisible) return 0.8;
+    if (fingerCount >= 1) return 0.5;
+    return 0.2;
   }
 
   private computeConfidence(gesture: GestureType, features: HandFeatures, speed: number): number {
@@ -374,6 +396,7 @@ export class GestureClassifier {
   getOcclusionRecovery(): OcclusionRecovery { return this.occlusionRecovery; }
   getAdaptiveThresholds(): AdaptiveThresholds { return this.adaptiveThresholds; }
   getFeatureExtractor(): FeatureExtractor { return this.featureExtractor; }
+  getConfidenceTracker(): ConfidenceTracker { return this.confidenceTracker; }
 
   destroy(): void {
     this.featureExtractor.reset();
@@ -381,6 +404,7 @@ export class GestureClassifier {
     this.motionPredictors.clear();
     this.occlusionRecovery.destroy();
     this.adaptiveThresholds.destroy();
+    this.confidenceTracker.reset();
     this.gestureCooldowns.clear();
     this.initialized = false;
   }

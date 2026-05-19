@@ -37,12 +37,17 @@ export interface AppStore {
   edgeProximity: number;
   gestureFrozen: boolean;
   freezeActive: boolean;
+  freezeReason: string;
   predictionActive: boolean;
   safeZoneActive: boolean;
   extrapolating: boolean;
+  trackingConfidence: number;
+  completenessScore: number;
+  calibrationActive: boolean;
   setIntegrityDebug: (
     integrity: number, edge: number, frozen: boolean,
     freeze: boolean, prediction: boolean, safeZone: boolean, extrapolating: boolean,
+    freezeReason?: string, trackingConfidence?: number,
   ) => void;
 
   strokes: StrokeData[];
@@ -64,6 +69,9 @@ export interface AppStore {
   cursorMode: boolean;
   webcamReady: boolean;
   webcamError: string | null;
+  showTutorial: boolean;
+  idleSeconds: number;
+  showQRPanel: boolean;
   setEngineState: (state: EngineState) => void;
   setMode: (mode: EngineMode) => void;
   setWebcamReady: (ready: boolean) => void;
@@ -73,6 +81,9 @@ export interface AppStore {
   togglePerformance: () => void;
   toggleDebug: () => void;
   setCursorMode: (active: boolean) => void;
+  setShowTutorial: (show: boolean) => void;
+  setIdleSeconds: (seconds: number) => void;
+  setShowQRPanel: (show: boolean) => void;
 
   color: string;
   strokeWidth: number;
@@ -123,11 +134,15 @@ export const useStore = create<AppStore>()((set, get) => ({
   edgeProximity: 0,
   gestureFrozen: false,
   freezeActive: false,
+  freezeReason: '',
   predictionActive: false,
   safeZoneActive: false,
   extrapolating: false,
-  setIntegrityDebug: (integrity, edge, frozen, freeze, prediction, safeZone, extrapolating) =>
-    set({ handIntegrity: integrity, edgeProximity: edge, gestureFrozen: frozen, freezeActive: freeze, predictionActive: prediction, safeZoneActive: safeZone, extrapolating }),
+  trackingConfidence: 0,
+  completenessScore: 0,
+  calibrationActive: false,
+  setIntegrityDebug: (integrity, edge, frozen, freeze, prediction, safeZone, extrapolating, freezeReason, trackingConfidence) =>
+    set({ handIntegrity: integrity, edgeProximity: edge, gestureFrozen: frozen, freezeActive: freeze, freezeReason: freezeReason ?? '', predictionActive: prediction, safeZoneActive: safeZone, extrapolating, trackingConfidence: trackingConfidence ?? 0 }),
 
   strokes: [],
   strokeCount: 0,
@@ -149,6 +164,9 @@ export const useStore = create<AppStore>()((set, get) => ({
   cursorMode: false,
   webcamReady: false,
   webcamError: null,
+  showTutorial: true,
+  idleSeconds: 0,
+  showQRPanel: false,
   setEngineState: (engineState) => set({ engineState }),
   setMode: (mode) => set({ mode }),
   setWebcamReady: (webcamReady) => set({ webcamReady, webcamError: webcamReady ? null : null }),
@@ -158,6 +176,9 @@ export const useStore = create<AppStore>()((set, get) => ({
   togglePerformance: () => set((s) => ({ showPerformance: !s.showPerformance })),
   toggleDebug: () => set((s) => ({ showDebug: !s.showDebug })),
   setCursorMode: (cursorMode) => set({ cursorMode }),
+  setShowTutorial: (showTutorial) => set({ showTutorial }),
+  setIdleSeconds: (idleSeconds) => set({ idleSeconds }),
+  setShowQRPanel: (showQRPanel) => set({ showQRPanel }),
 
   color: PALETTE_HEXES[0],
   strokeWidth: 3,

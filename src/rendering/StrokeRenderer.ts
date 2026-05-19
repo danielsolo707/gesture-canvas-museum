@@ -56,7 +56,7 @@ export class StrokeRenderer {
     const smoothPts = this.catmullRomSmooth(stroke.points, DRAWING.CURVE_QUALITY);
     const widths = this.computeVelocityWidths(smoothPts, stroke.width);
 
-    const geo = this.buildRibbonGeometry(smoothPts, widths, stroke.color);
+    const geo = this.buildCircularGeometry(smoothPts, widths, stroke.color);
     const mesh = new THREE.Mesh(geo, this.material);
     mesh.renderOrder = 1;
     mesh.frustumCulled = false;
@@ -64,7 +64,7 @@ export class StrokeRenderer {
     this.meshes.set(stroke.id, mesh);
 
     if (RENDER.STROKE_GLOW_ENABLED) {
-      const glowGeo = this.buildRibbonGeometry(smoothPts, widths.map(w => w * 2.5), stroke.color);
+      const glowGeo = this.buildCircularGeometry(smoothPts, widths.map(w => w * 2.5), stroke.color);
       const glow = new THREE.Mesh(glowGeo, this.glowMaterial);
       glow.renderOrder = 0;
       glow.frustumCulled = false;
@@ -79,12 +79,12 @@ export class StrokeRenderer {
       this.recycleGeometry(existing.geometry);
       const smoothPts = this.catmullRomSmooth(stroke.points, DRAWING.CURVE_QUALITY);
       const widths = this.computeVelocityWidths(smoothPts, stroke.width);
-      existing.geometry = this.buildRibbonGeometry(smoothPts, widths, stroke.color);
+      existing.geometry = this.buildCircularGeometry(smoothPts, widths, stroke.color);
 
       const glow = this.glowMeshes.get(stroke.id);
       if (glow) {
         this.recycleGeometry(glow.geometry);
-        glow.geometry = this.buildRibbonGeometry(smoothPts, widths.map(w => w * 2.5), stroke.color);
+        glow.geometry = this.buildCircularGeometry(smoothPts, widths.map(w => w * 2.5), stroke.color);
       }
     } else {
       this.addStroke(stroke);
@@ -217,65 +217,52 @@ export class StrokeRenderer {
     return widths;
   }
 
-  private buildRibbonGeometry(points: StrokePoint[], widths: number[], colorHex: string): THREE.BufferGeometry {
+  private buildCircularGeometry(points: StrokePoint[], widths: number[], colorHex: string): THREE.BufferGeometry {
+    const SEGMENTS = 8;
     if (points.length < 2) return this.acquireGeometry();
 
     const color = new THREE.Color(colorHex);
     const count = points.length;
-    const vertCount = count * 2;
-    const idxCount = (count - 1) * 6;
+    const vertCount = count * SEGMENTS;
+    const idxCount = (count - 1) * SEGMENTS * 6;
 
     const positions = new Float32Array(vertCount * 3);
     const vertColors = new Float32Array(vertCount * 3);
     const indices = vertCount > 65535 ? new Uint32Array(idxCount) : new Uint16Array(idxCount);
 
-    let vi = 0;
     let ii = 0;
-
     const r = color.r, g = color.g, b = color.b;
 
     for (let i = 0; i < count; i++) {
       const p = points[i];
       const w = widths[i];
 
-      let nx: number, ny: number;
-      if (i < count - 1) {
-        const dx = points[i + 1].x - p.x;
-        const dy = points[i + 1].y - p.y;
-        const len = Math.sqrt(dx * dx + dy * dy) || 1;
-        nx = -dy / len;
-        ny = dx / len;
-      } else {
-        const dx = p.x - points[i - 1].x;
-        const dy = p.y - points[i - 1].y;
-        const len = Math.sqrt(dx * dx + dy * dy) || 1;
-        nx = -dy / len;
-        ny = dx / len;
-      }
+      for (let j = 0; j < SEGMENTS; j++) {
+        const angle = (j / SEGMENTS) * Math.PI * 2;
+        const cos = Math.cos(angle);
+        const sin = Math.sin(angle);
 
-      const base = vi * 3;
-      positions[base] = p.x + nx * w;
-      positions[base + 1] = p.y + ny * w;
-      positions[base + 2] = p.z;
-      vertColors[base] = r;
-      vertColors[base + 1] = g;
-      vertColors[base + 2] = b;
+        const base = (i * SEGMENTS + j) * 3;
+        positions[base] = p.x + cos * w;
+        positions[base + 1] = p.y + sin * w;
+        positions[base + 2] = p.z;
+        vertColors[base] = r;
+        vertColors[base + 1] = g;
+        vertColors[base + 2] = b;
 
-      const base2 = (vi + 1) * 3;
-      positions[base2] = p.x - nx * w;
-      positions[base2 + 1] = p.y - ny * w;
-      positions[base2 + 2] = p.z;
-      vertColors[base2] = r;
-      vertColors[base2 + 1] = g;
-      vertColors[base2 + 2] = b;
+        if (i < count - 1) {
+          const curr = i * SEGMENTS + j;
+          const next = i * SEGMENTS + (j + 1) % SEGMENTS;
+          const nextRing = (i + 1) * SEGMENTS + j;
+          const nextRingNext = (i + 1) * SEGMENTS + (j + 1) % SEGMENTS;
 
-      vi += 2;
-
-      if (i < count - 1) {
-        const a = i * 2;
-        const c = (i + 1) * 2;
-        indices[ii++] = a; indices[ii++] = a + 1; indices[ii++] = c;
-        indices[ii++] = a + 1; indices[ii++] = c + 1; indices[ii++] = c;
+          indices[ii++] = curr;
+          indices[ii++] = nextRing;
+          indices[ii++] = next;
+          indices[ii++] = next;
+          indices[ii++] = nextRing;
+          indices[ii++] = nextRingNext;
+        }
       }
     }
 

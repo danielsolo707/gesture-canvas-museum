@@ -13,11 +13,34 @@ const CONNECTIONS: [number, number][] = [
 export function HandDebugOverlay() {
   const hands = useStore((s) => s.hands);
   const mode = useStore((s) => s.mode);
+  const showDebug = useStore((s) => s.showDebug);
+  const gestureDebug = useStore((s) => s.gestureDebug);
 
   if (mode !== 'camera') return null;
 
   return (
     <svg className="hand-debug-overlay" viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true">
+      {showDebug && gestureDebug && (
+        <>
+          <rect
+            x={0.0} y={0.0}
+            width={1.0} height={1.0}
+            fill="none"
+            stroke="rgba(0,255,100,0.15)"
+            strokeWidth={0.003}
+            strokeDasharray="0.01 0.01"
+            vectorEffect="non-scaling-stroke"
+          />
+          <rect x={0} y={0} width={0.15} height={1}
+            fill={`rgba(255,100,0,${gestureDebug.leftEdge * 0.15})`} />
+          <rect x={0.85} y={0} width={0.15} height={1}
+            fill={`rgba(255,100,0,${gestureDebug.rightEdge * 0.15})`} />
+          <rect x={0} y={0} width={1} height={0.15}
+            fill={`rgba(255,100,0,${gestureDebug.topEdge * 0.15})`} />
+          <rect x={0} y={0.85} width={1} height={0.15}
+            fill={`rgba(255,100,0,${gestureDebug.bottomEdge * 0.2})`} />
+        </>
+      )}
       {hands.map((hand, handIndex) => {
         const color = hand.handedness === 'Left' ? '#4dabf7' : '#ffa94d';
         return (
