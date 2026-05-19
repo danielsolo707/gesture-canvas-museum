@@ -4,10 +4,53 @@ import QRCode from 'qrcode';
 
 const QR_MAX_BYTES = 2900;
 
-function captureCanvas(): HTMLCanvasElement | null {
-  const canvas = document.querySelector('canvas');
-  if (!canvas) return null;
-  return canvas;
+function mapX(x: number, aspect: number, W: number): number {
+  return ((x / aspect) + 1) / 2 * W;
+}
+function mapY(y: number, H: number): number {
+  return (1 - y) / 2 * H;
+}
+
+function renderStrokesOnly(): HTMLCanvasElement | null {
+  const { strokes } = useStore.getState();
+  if (strokes.length === 0) return null;
+
+  const threeCanvas = document.querySelector('canvas');
+  const aspect = threeCanvas ? threeCanvas.clientWidth / threeCanvas.clientHeight : 16 / 9;
+
+  const W = 1000;
+  const H = Math.round(W / aspect);
+  const offscreen = document.createElement('canvas');
+  offscreen.width = W;
+  offscreen.height = H;
+  const ctx = offscreen.getContext('2d')!;
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, W, H);
+
+  for (const stroke of strokes) {
+    if (stroke.points.length < 2) continue;
+
+    const pixelWidth = Math.max(1, (stroke.width * 0.008 / 2) * H);
+
+    ctx.beginPath();
+    ctx.strokeStyle = stroke.color;
+    ctx.lineWidth = pixelWidth;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    const p0 = stroke.points[0];
+    ctx.moveTo(mapX(p0.x, aspect, W), mapY(p0.y, H));
+
+    for (let i = 1; i < stroke.points.length; i++) {
+      const p = stroke.points[i];
+      ctx.lineTo(mapX(p.x, aspect, W), mapY(p.y, H));
+    }
+
+    ctx.stroke();
+  }
+
+  return offscreen;
 }
 
 function resizeImage(src: HTMLCanvasElement, maxWidth: number): HTMLCanvasElement {
@@ -74,9 +117,9 @@ export function QRDownloadPanel() {
 
   const capture = useCallback(async () => {
     setError(null);
-    const canvas = captureCanvas();
+    const canvas = renderStrokesOnly();
     if (!canvas) {
-      setError('Canvas not found');
+      setError('Draw something first');
       return;
     }
 
