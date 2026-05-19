@@ -23,25 +23,9 @@ export function TutorialOverlay() {
   const showTutorial = useStore((s) => s.showTutorial);
   const currentGesture = useStore((s) => s.currentGesture);
   const setShowTutorial = useStore((s) => s.setShowTutorial);
-  const dismissTimeoutRef = useRef<number | null>(null);
   const gestureRef = useRef(currentGesture);
 
   gestureRef.current = currentGesture;
-
-  useEffect(() => {
-    if (!showTutorial) return;
-
-    dismissTimeoutRef.current = window.setTimeout(() => {
-      setShowTutorial(false);
-    }, 10000);
-
-    return () => {
-      if (dismissTimeoutRef.current !== null) {
-        window.clearTimeout(dismissTimeoutRef.current);
-        dismissTimeoutRef.current = null;
-      }
-    };
-  }, [showTutorial, setShowTutorial]);
 
   useEffect(() => {
     if (!showTutorial) return;
