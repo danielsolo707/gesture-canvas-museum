@@ -8,14 +8,19 @@ const STEPS = [
     fa: 'برای شروع دست خود را تکان دهید',
   },
   {
-    icon: '✍️',
-    en: 'Pinch to draw',
-    fa: 'برای نقاشی کردن انگشتان را به هم بزنید',
+    icon: '👆',
+    en: 'Point to draw',
+    fa: 'با انگشت اشاره نقاشی کنید',
+  },
+  {
+    icon: '✌️',
+    en: 'Two fingers for menu',
+    fa: 'با دو انگشت منو را باز کنید',
   },
   {
     icon: '🖐️',
-    en: 'Open palm for menu',
-    fa: 'برای باز کردن منو کف دست را نشان دهید',
+    en: 'Open palm to erase',
+    fa: 'با کف دست پاک کنید',
   },
 ];
 
