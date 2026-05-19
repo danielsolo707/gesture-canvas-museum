@@ -225,7 +225,7 @@ export class Engine {
       this._stats.inferenceMs = performance.now() - t0;
 
       if (hands.length > 0) {
-        hands = hands.filter((h) => computeHandScale(h.landmarks) >= 0.07);
+        hands = hands.filter((h) => computeHandScale(h.landmarks) >= 0.03);
         if (hands.length > 1) {
           hands.sort((a, b) => computeHandScale(b.landmarks) - computeHandScale(a.landmarks));
           hands = [hands[0]];
