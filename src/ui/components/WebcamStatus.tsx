@@ -14,6 +14,7 @@ export function WebcamStatus() {
   const mode = useStore((s) => s.mode);
   const webcamReady = useStore((s) => s.webcamReady);
   const webcamError = useStore((s) => s.webcamError);
+  const showDebug = useStore((s) => s.showDebug);
 
   let dotClass = 'webcam-dot inactive';
   let label = 'Initializing...';
@@ -39,7 +40,7 @@ export function WebcamStatus() {
 
   return (
     <div className="webcam-status" style={{
-      position: 'fixed', top: 20, right: 20,
+      position: 'fixed', top: showDebug ? 20 : 10, right: showDebug ? 20 : 12,
       display: 'flex', alignItems: 'center', gap: 8,
       padding: '6px 14px',
       background: 'rgba(10,10,15,0.75)',

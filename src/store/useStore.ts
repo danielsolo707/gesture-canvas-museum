@@ -8,6 +8,8 @@ import {
   Handedness,
   GestureDebugInfo,
   CursorState,
+  VisibilityMode,
+  InteractionCapabilityLevel,
 } from '../core/types';
 import { PALETTE_HEXES } from '../features/colors/ColorPalette';
 
@@ -38,6 +40,14 @@ export interface AppStore {
   gestureFrozen: boolean;
   freezeActive: boolean;
   freezeReason: string;
+  freezeDurationMs: number;
+  freezeGraceActive: boolean;
+  recoveryMode: 'none' | 'frozen' | 'grace' | 'reentry' | 'hard_reset';
+  handReentry: boolean;
+  authorityOwner: 'none' | 'tracking' | 'freeze' | 'prediction';
+  visibilityMode: VisibilityMode;
+  capabilityLevel: InteractionCapabilityLevel;
+  handAbsenceMs: number;
   predictionActive: boolean;
   safeZoneActive: boolean;
   extrapolating: boolean;
@@ -48,6 +58,14 @@ export interface AppStore {
     integrity: number, edge: number, frozen: boolean,
     freeze: boolean, prediction: boolean, safeZone: boolean, extrapolating: boolean,
     freezeReason?: string, trackingConfidence?: number,
+    freezeDurationMs?: number,
+    freezeGraceActive?: boolean,
+    recoveryMode?: 'none' | 'frozen' | 'grace' | 'reentry' | 'hard_reset',
+    handReentry?: boolean,
+    authorityOwner?: 'none' | 'tracking' | 'freeze' | 'prediction',
+    visibilityMode?: VisibilityMode,
+    capabilityLevel?: InteractionCapabilityLevel,
+    handAbsenceMs?: number,
   ) => void;
 
   strokes: StrokeData[];
@@ -72,6 +90,8 @@ export interface AppStore {
   showTutorial: boolean;
   idleSeconds: number;
   showQRPanel: boolean;
+  qrSnapshotBlob: Blob | null;
+  qrSnapshotPreviewUrl: string | null;
   setEngineState: (state: EngineState) => void;
   setMode: (mode: EngineMode) => void;
   setWebcamReady: (ready: boolean) => void;
@@ -84,6 +104,8 @@ export interface AppStore {
   setShowTutorial: (show: boolean) => void;
   setIdleSeconds: (seconds: number) => void;
   setShowQRPanel: (show: boolean) => void;
+  setQrSnapshot: (blob: Blob | null, previewUrl: string | null) => void;
+  clearQrSnapshot: () => void;
 
   color: string;
   strokeWidth: number;
@@ -135,14 +157,58 @@ export const useStore = create<AppStore>()((set, get) => ({
   gestureFrozen: false,
   freezeActive: false,
   freezeReason: '',
+  freezeDurationMs: 0,
+  freezeGraceActive: false,
+  recoveryMode: 'none',
+  handReentry: false,
+  authorityOwner: 'none',
+  visibilityMode: 'lost',
+  capabilityLevel: 'lost',
+  handAbsenceMs: 0,
   predictionActive: false,
   safeZoneActive: false,
   extrapolating: false,
   trackingConfidence: 0,
   completenessScore: 0,
   calibrationActive: false,
-  setIntegrityDebug: (integrity, edge, frozen, freeze, prediction, safeZone, extrapolating, freezeReason, trackingConfidence) =>
-    set({ handIntegrity: integrity, edgeProximity: edge, gestureFrozen: frozen, freezeActive: freeze, freezeReason: freezeReason ?? '', predictionActive: prediction, safeZoneActive: safeZone, extrapolating, trackingConfidence: trackingConfidence ?? 0 }),
+  setIntegrityDebug: (
+    integrity,
+    edge,
+    frozen,
+    freeze,
+    prediction,
+    safeZone,
+    extrapolating,
+    freezeReason,
+    trackingConfidence,
+    freezeDurationMs,
+    freezeGraceActive,
+    recoveryMode,
+    handReentry,
+    authorityOwner,
+    visibilityMode,
+    capabilityLevel,
+    handAbsenceMs,
+  ) =>
+    set({
+      handIntegrity: integrity,
+      edgeProximity: edge,
+      gestureFrozen: frozen,
+      freezeActive: freeze,
+      freezeReason: freezeReason ?? '',
+      freezeDurationMs: freezeDurationMs ?? 0,
+      freezeGraceActive: freezeGraceActive ?? false,
+      recoveryMode: recoveryMode ?? 'none',
+      handReentry: handReentry ?? false,
+      authorityOwner: authorityOwner ?? 'none',
+      visibilityMode: visibilityMode ?? 'lost',
+      capabilityLevel: capabilityLevel ?? 'lost',
+      handAbsenceMs: handAbsenceMs ?? 0,
+      predictionActive: prediction,
+      safeZoneActive: safeZone,
+      extrapolating,
+      trackingConfidence: trackingConfidence ?? 0,
+    }),
 
   strokes: [],
   strokeCount: 0,
@@ -167,6 +233,8 @@ export const useStore = create<AppStore>()((set, get) => ({
   showTutorial: true,
   idleSeconds: 0,
   showQRPanel: false,
+  qrSnapshotBlob: null,
+  qrSnapshotPreviewUrl: null,
   setEngineState: (engineState) => set({ engineState }),
   setMode: (mode) => set({ mode }),
   setWebcamReady: (webcamReady) => set({ webcamReady, webcamError: webcamReady ? null : null }),
@@ -179,6 +247,8 @@ export const useStore = create<AppStore>()((set, get) => ({
   setShowTutorial: (showTutorial) => set({ showTutorial }),
   setIdleSeconds: (idleSeconds) => set({ idleSeconds }),
   setShowQRPanel: (showQRPanel) => set({ showQRPanel }),
+  setQrSnapshot: (qrSnapshotBlob, qrSnapshotPreviewUrl) => set({ qrSnapshotBlob, qrSnapshotPreviewUrl }),
+  clearQrSnapshot: () => set({ qrSnapshotBlob: null, qrSnapshotPreviewUrl: null }),
 
   color: PALETTE_HEXES[0],
   strokeWidth: 3,

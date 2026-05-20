@@ -29,6 +29,14 @@ export function TemporalDebugPanel() {
   const gestureFrozen = useStore((s) => s.gestureFrozen);
   const freezeActive = useStore((s) => s.freezeActive);
   const freezeReason = useStore((s) => s.freezeReason);
+  const freezeDurationMs = useStore((s) => s.freezeDurationMs);
+  const freezeGraceActive = useStore((s) => s.freezeGraceActive);
+  const recoveryMode = useStore((s) => s.recoveryMode);
+  const handReentry = useStore((s) => s.handReentry);
+  const authorityOwner = useStore((s) => s.authorityOwner);
+  const visibilityMode = useStore((s) => s.visibilityMode);
+  const capabilityLevel = useStore((s) => s.capabilityLevel);
+  const handAbsenceMs = useStore((s) => s.handAbsenceMs);
   const predictionActive = useStore((s) => s.predictionActive);
   const safeZoneActive = useStore((s) => s.safeZoneActive);
   const extrapolating = useStore((s) => s.extrapolating);
@@ -75,8 +83,19 @@ export function TemporalDebugPanel() {
         {gestureFrozen && freezeReason && (
           <span style={{ color: freezeColor(freezeReason) }}>{freezeReason}</span>
         )}
+        {freezeGraceActive && <span style={{ color: '#74c0fc' }}>GRACE</span>}
+        {handReentry && <span style={{ color: '#69db7c' }}>REENTRY</span>}
         {predictionActive && <span style={{ color: '#0ff' }}>PREDICT</span>}
         {extrapolating && <span style={{ color: '#ff0' }}>EXTRAP</span>}
+      </div>
+
+      <div style={{ marginBottom: 4, display: 'flex', gap: 8, flexWrap: 'wrap', color: '#aaa' }}>
+        <span>Recovery: <span style={{ color: '#74c0fc' }}>{recoveryMode}</span></span>
+        <span>Authority: <span style={{ color: '#ffd43b' }}>{authorityOwner}</span></span>
+        <span>Vis: <span style={{ color: '#69db7c' }}>{visibilityMode}</span></span>
+        <span>Capability: <span style={{ color: '#f783ac' }}>{capabilityLevel}</span></span>
+        <span>Absence: <span style={{ color: '#ffa94d' }}>{Math.round(handAbsenceMs)}ms</span></span>
+        <span>FreezeMs: <span style={{ color: '#ff8787' }}>{Math.round(freezeDurationMs)}ms</span></span>
       </div>
 
       {gestureDebug && (

@@ -35,21 +35,23 @@ export class SafeInteractionZoneMapper {
   }
 
   map(rawX: number, rawY: number): SafeZoneResult {
+    const clampedRawX = Math.max(0, Math.min(1, rawX));
+    const clampedRawY = Math.max(0, Math.min(1, rawY));
     const isInSafeZone = rawX >= this.innerXMin && rawX <= this.innerXMax
       && rawY >= this.innerYMin && rawY <= this.innerYMax;
 
-    const stabilizedX = this.sigmoidCompress(rawX, this.innerXMin, this.innerXMax, this.compressionStrength);
-    const stabilizedY = this.sigmoidCompress(rawY, this.innerYMin, this.innerYMax, this.bottomCompression);
+    const stabilizedX = this.sigmoidCompress(clampedRawX, this.innerXMin, this.innerXMax, this.compressionStrength);
+    const stabilizedY = this.sigmoidCompress(clampedRawY, this.innerYMin, this.innerYMax, this.bottomCompression);
 
     const edgeFalloff = {
-      x: this.computeEdgeFalloff(rawX, this.innerXMin, this.innerXMax),
-      y: this.computeEdgeFalloff(rawY, this.innerYMin, this.innerYMax),
+      x: this.computeEdgeFalloff(clampedRawX, this.innerXMin, this.innerXMax),
+      y: this.computeEdgeFalloff(clampedRawY, this.innerYMin, this.innerYMax),
     };
 
     const dampingApplied = stabilizedX !== rawX || stabilizedY !== rawY;
 
     return {
-      stabilizedX, stabilizedY, rawX, rawY,
+      stabilizedX, stabilizedY, rawX: clampedRawX, rawY: clampedRawY,
       dampingApplied, isInSafeZone, edgeFalloff,
     };
   }
@@ -62,13 +64,13 @@ export class SafeInteractionZoneMapper {
     if (value < innerMin) {
       const t = (innerMin - value) / innerMin;
       const compression = this.smoothstep(t) * strength;
-      return innerMin - t * innerMin * compression;
+      return Math.max(0, innerMin - t * innerMin * compression);
     }
 
     const outerRight = 1 - innerMax;
     const t = (value - innerMax) / outerRight;
     const compression = this.smoothstep(t) * strength;
-    return innerMax + t * outerRight * (1 - compression);
+    return Math.min(1, innerMax + t * outerRight * (1 - compression));
   }
 
   private smoothstep(t: number): number {

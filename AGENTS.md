@@ -21,10 +21,18 @@
 
 ## Testing
 ```bash
-npm run dev      # http://localhost:3000
+npm run dev      # http://localhost:3000 (Vite dev — QR download API built in)
 npm run build    # Production build → dist/
+npm run start    # Production server (Node) — serves dist/ + QR download API
 npm run typecheck  # tsc --noEmit
 ```
+
+## Download / QR
+- Snapshot (JPEG) is captured from the main canvas when the download button is clicked
+- POST `/api/upload` → returns `/api/download/<uuid>` URL (relative, same origin)
+- QR encodes `window.location.origin + /api/download/<uuid>`
+- Works in dev (Vite plugin in `vite.config.ts`) and production (`scripts/serve-prod.mjs`)
+- No external upload service needed; all data stays on the local machine
 
 ## Model File
 MediaPipe hand_landmarker.task must be at `public/models/hand_landmarker.task`

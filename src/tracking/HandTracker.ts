@@ -1,5 +1,5 @@
 import { HandSnapshot, Handedness, HandIntegrity } from '../core/types';
-import { INFERENCE, SMOOTHING } from '../core/constants';
+import { INFERENCE, SMOOTHING, HANDEDNESS } from '../core/constants';
 import { OneEuroFilter } from '../smoothing/OneEuroFilter';
 import { logger } from '../utils/logging';
 import { HandIntegrityValidator, IntegrityResult } from './HandIntegrityValidator';
@@ -36,6 +36,8 @@ export class HandTracker {
   private pendingWorkerResolve: ((hands: HandSnapshot[]) => void) | null = null;
   private integrityValidator: HandIntegrityValidator;
   private lastIntegrityResult: IntegrityResult | null = null;
+  private lastPrimaryHandedness: Handedness | null = null;
+  private lastPrimaryHandednessAt = 0;
 
   constructor() {
     this.filter = new OneEuroFilter({
@@ -248,8 +250,15 @@ export class HandTracker {
     this.lastIntegrityResult = result;
     return {
       score: result.score,
+      completenessScore: result.completenessScore,
       wristVisible: result.wristVisible,
       palmIntact: result.palmIntact,
+      mcpVisibleCount: result.mcpVisibleCount,
+      indexChainValid: result.indexChainValid,
+      middleChainValid: result.middleChainValid,
+      partialCursorCandidate: result.partialCursorCandidate,
+      visibilityMode: result.visibilityMode,
+      capabilityLevel: result.capabilityLevel,
       individualFingers: result.individualFingers,
       requiredGroups: result.requiredGroups,
       edgeFlags: result.edgeFlags,
@@ -302,13 +311,12 @@ export class HandTracker {
 
       const detected = rawHandedness[i]?.displayName;
       let detectedHandedness: Handedness = (detected === 'Left' || detected === 'Right') ? detected : 'Right';
-      // Image is mirrored → flip MediaPipe's handedness label
+      // Image is mirrored -> flip MediaPipe handedness
       detectedHandedness = detectedHandedness === 'Left' ? 'Right' : 'Left';
+      const detectedScore = rawHandedness[i]?.score ?? 1;
       const handedness: Handedness = matchedPrev >= 0
         ? this.lastHands[matchedPrev].handedness
-        : (this.lastHands.length === 1 && rawLandmarks.length === 1
-          ? this.lastHands[0].handedness
-          : detectedHandedness);
+        : this.resolveSingleHandedness(detectedHandedness, detectedScore, rawLandmarks.length === 1, timestamp);
       const handId = matchedPrev >= 0 ? `track:${matchedPrev}` : `track:${i}`;
 
       const filtered = this.filter.filterLandmarks(handId, raw, timestamp);
@@ -316,7 +324,7 @@ export class HandTracker {
       return {
         landmarks: filtered,
         handedness,
-        confidence: rawHandedness[i]?.score ?? 1,
+        confidence: detectedScore,
         timestamp,
       };
     });
@@ -376,12 +384,12 @@ export class HandTracker {
       }
 
       const detected = rawHandedness[h]?.displayName;
-      const detectedHandedness = (detected === 'Left' || detected === 'Right') ? detected : 'Right';
+      let detectedHandedness: Handedness = (detected === 'Left' || detected === 'Right') ? detected : 'Right';
+      // Worker receives mirrored frames too -> flip handedness like main-thread path.
+      detectedHandedness = detectedHandedness === 'Left' ? 'Right' : 'Left';
       const handedness = matchedPrev >= 0
         ? this.lastHands[matchedPrev].handedness
-        : (this.lastHands.length === 1 && numHands === 1
-          ? this.lastHands[0].handedness
-          : detectedHandedness);
+        : this.resolveSingleHandedness(detectedHandedness, rawHandedness[h]?.score ?? 1, numHands === 1, timestamp);
       const handId = matchedPrev >= 0 ? `track:${matchedPrev}` : `track:${h}`;
       const confidence = rawHandedness[h]?.score ?? 1;
 
@@ -538,5 +546,37 @@ export class HandTracker {
     }
     const denom = count === 0 ? 1 : count;
     return { x: totalX / denom, y: totalY / denom };
+  }
+
+  private resolveSingleHandedness(
+    detected: Handedness,
+    detectedScore: number,
+    isSingleHand: boolean,
+    timestamp: number,
+  ): Handedness {
+    if (!isSingleHand) {
+      this.lastPrimaryHandedness = null;
+      this.lastPrimaryHandednessAt = 0;
+      return detected;
+    }
+
+    if (this.lastHands.length === 1) {
+      const stable = this.lastHands[0].handedness;
+      this.lastPrimaryHandedness = stable;
+      this.lastPrimaryHandednessAt = timestamp;
+      return stable;
+    }
+
+    const stableHand = this.lastPrimaryHandedness;
+    const recentlyStable = stableHand !== null
+      && (timestamp - this.lastPrimaryHandednessAt) < HANDEDNESS.STICKY_WINDOW_MS;
+    const lowConfidenceHandedness = detectedScore < HANDEDNESS.SWITCH_CONFIDENCE_MIN;
+    if (recentlyStable && lowConfidenceHandedness) {
+      return stableHand;
+    }
+
+    this.lastPrimaryHandedness = detected;
+    this.lastPrimaryHandednessAt = timestamp;
+    return detected;
   }
 }

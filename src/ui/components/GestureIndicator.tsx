@@ -9,6 +9,7 @@ const GESTURE_LABELS: Record<string, { en: string; fa: string }> = {
 export function GestureIndicator() {
   const current = useStore((s) => s.currentGesture);
   const isErasing = useStore((s) => s.isErasing);
+  const showDebug = useStore((s) => s.showDebug);
 
   const gestureKey = isErasing && current === 'drawing' ? 'eraser' : current;
   const label = GESTURE_LABELS[gestureKey];
@@ -18,7 +19,7 @@ export function GestureIndicator() {
 
   return (
     <div className={className} style={{
-      position: 'fixed', top: 20, left: '50%',
+      position: 'fixed', top: showDebug ? 20 : 10, left: '50%',
       transform: 'translateX(-50%)',
       padding: '8px 20px',
       borderRadius: 100,

@@ -1,11 +1,18 @@
 import { LANDMARK_INDICES as L, NUM_LANDMARKS } from '../core/types';
-import { INTEGRITY } from '../core/constants';
+import { INTEGRITY, VISIBILITY } from '../core/constants';
 import { getLandmark } from '../utils/math';
 
 export interface IntegrityResult {
   score: number;
+  completenessScore: number;
   wristVisible: boolean;
   palmIntact: boolean;
+  mcpVisibleCount: number;
+  indexChainValid: boolean;
+  middleChainValid: boolean;
+  partialCursorCandidate: boolean;
+  visibilityMode: 'full' | 'partial' | 'recovery' | 'lost';
+  capabilityLevel: 'full' | 'partial_draw' | 'partial_cursor' | 'recovery' | 'lost';
   individualFingers: { thumb: boolean; index: boolean; middle: boolean; ring: boolean; pinky: boolean };
   requiredGroups: { drawing: boolean; cursor: boolean; eraser: boolean };
   edgeFlags: { anyEdge: boolean; leftEdge: boolean; rightEdge: boolean; topEdge: boolean; bottomEdge: boolean };
@@ -53,6 +60,7 @@ export class HandIntegrityValidator {
       pinkyMcp: !missing.includes(L.PINKY_MCP),
     };
     const palmIntact = palm.thumbMcp && palm.indexMcp && palm.middleMcp && palm.ringMcp && palm.pinkyMcp;
+    const mcpVisibleCount = [palm.thumbMcp, palm.indexMcp, palm.middleMcp, palm.ringMcp, palm.pinkyMcp].filter(Boolean).length;
 
     const finger = {
       thumb: !missing.includes(L.THUMB_TIP) && !missing.includes(L.THUMB_MCP) && !missing.includes(L.THUMB_IP),
@@ -61,6 +69,14 @@ export class HandIntegrityValidator {
       ring: !missing.includes(L.RING_TIP) && !missing.includes(L.RING_MCP) && !missing.includes(L.RING_PIP),
       pinky: !missing.includes(L.PINKY_TIP) && !missing.includes(L.PINKY_MCP) && !missing.includes(L.PINKY_PIP),
     };
+
+    const indexChainValid = !missing.includes(L.INDEX_TIP)
+      && !missing.includes(L.INDEX_PIP)
+      && !missing.includes(L.INDEX_MCP);
+    const middleChainValid = !missing.includes(L.MIDDLE_TIP)
+      && !missing.includes(L.MIDDLE_PIP)
+      && !missing.includes(L.MIDDLE_MCP);
+    const partialCursorCandidate = indexChainValid && middleChainValid;
 
     const requiredGroups = {
       drawing: wristVis && finger.index && palm.indexMcp,
@@ -84,10 +100,44 @@ export class HandIntegrityValidator {
       ((groupScore / 7) * 0.7 + (fingerCount / 5) * 0.3) * (1 - missingPenalty * 0.3)
     ));
 
+    const completenessScore = Math.max(0, Math.min(1,
+      (score * 0.45)
+      + (mcpVisibleCount / 5) * 0.2
+      + (wristVis ? 0.15 : 0)
+      + (indexChainValid ? 0.1 : 0)
+      + (middleChainValid ? 0.1 : 0)
+    ));
+
+    const visibilityMode: 'full' | 'partial' | 'recovery' | 'lost' =
+      completenessScore >= VISIBILITY.FULL_COMPLETENESS_MIN
+      && wristVis
+      && palmIntact
+      && mcpVisibleCount >= VISIBILITY.FULL_MCP_VISIBLE_MIN
+        ? 'full'
+        : completenessScore >= VISIBILITY.PARTIAL_COMPLETENESS_MIN && (indexChainValid || partialCursorCandidate)
+          ? 'partial'
+          : completenessScore >= VISIBILITY.RECOVERY_COMPLETENESS_MIN
+            ? 'recovery'
+            : 'lost';
+
+    const capabilityLevel: 'full' | 'partial_draw' | 'partial_cursor' | 'recovery' | 'lost' =
+      visibilityMode === 'full'
+        ? 'full'
+        : visibilityMode === 'partial'
+          ? (partialCursorCandidate ? 'partial_cursor' : (indexChainValid ? 'partial_draw' : 'recovery'))
+          : (visibilityMode === 'recovery' ? 'recovery' : 'lost');
+
     return {
       score,
+      completenessScore,
       wristVisible: wristVis,
       palmIntact,
+      mcpVisibleCount,
+      indexChainValid,
+      middleChainValid,
+      partialCursorCandidate,
+      visibilityMode,
+      capabilityLevel,
       individualFingers: finger,
       requiredGroups,
       edgeFlags: { ...atEdge, anyEdge: atEdge.leftEdge || atEdge.rightEdge || atEdge.topEdge || atEdge.bottomEdge },
@@ -154,8 +204,15 @@ export class HandIntegrityValidator {
   private zeroResult(): IntegrityResult {
     return {
       score: 0,
+      completenessScore: 0,
       wristVisible: false,
       palmIntact: false,
+      mcpVisibleCount: 0,
+      indexChainValid: false,
+      middleChainValid: false,
+      partialCursorCandidate: false,
+      visibilityMode: 'lost',
+      capabilityLevel: 'lost',
       individualFingers: { thumb: false, index: false, middle: false, ring: false, pinky: false },
       requiredGroups: { drawing: false, cursor: false, eraser: false },
       edgeFlags: { anyEdge: false, leftEdge: false, rightEdge: false, topEdge: false, bottomEdge: false },

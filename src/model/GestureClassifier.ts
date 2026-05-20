@@ -175,10 +175,11 @@ export class GestureClassifier {
       const gestureChanged = sm.current !== finalGesture;
 
       // Step 8: Extra activation frames near edges or low integrity
-      const edgePenalty = 0;
+      const edgePenalty = (edgeProx?.overall ?? 0) > 0.65 ? 2 : 0;
       const integrityPenalty = integrityScore < 0.6 ? 3 : 0;
       const confidencePenalty = smoothedConfidence < 0.5 ? 1 : 0;
-      const extraFrames = edgePenalty + integrityPenalty + confidencePenalty;
+      const centerResponsive = (edgeProx?.overall ?? 0) < 0.2 && integrityScore >= 0.7 && smoothedConfidence >= 0.55;
+      const extraFrames = Math.max(0, edgePenalty + integrityPenalty + confidencePenalty - (centerResponsive ? 1 : 0));
 
       this.updateStateMachine(sm, finalGesture, finalConfidence, now, extraFrames);
 
@@ -202,8 +203,10 @@ export class GestureClassifier {
       if (finalGesture !== 'idle' && gestureChanged && !freezeState?.frozen) {
         const effectiveCooldown = GESTURE.COOLDOWN_MS
           + (integrityScore < 0.6 ? 150 : 0)
+          + ((edgeProx?.overall ?? 0) > 0.6 ? 120 : 0)
           + (smoothedConfidence < 0.5 ? 80 : 0);
-        if (now - lastFired >= effectiveCooldown) {
+        const responsiveCooldown = centerResponsive ? Math.max(40, effectiveCooldown - 50) : effectiveCooldown;
+        if (now - lastFired >= responsiveCooldown) {
           shouldEmitEvent = true;
           this.gestureCooldowns.set(cooldownKey, now);
         }
@@ -273,6 +276,20 @@ export class GestureClassifier {
         sm.deactivationCount = 0;
       }
     } else {
+      const fastStartDrawing = sm.current === 'idle'
+        && detected === 'drawing'
+        && confidence >= 0.55
+        && extraFrames <= 1;
+
+      if (fastStartDrawing) {
+        sm.current = 'drawing';
+        sm.confidence = confidence;
+        sm.stableCount = 1;
+        sm.activationCount = 0;
+        sm.deactivationCount = 0;
+        return;
+      }
+
       const effectiveActivate = GESTURE.ACTIVATE_FRAMES + extraFrames;
       const effectiveDeactivate = GESTURE.DEACTIVATE_FRAMES;
 
@@ -322,7 +339,7 @@ export class GestureClassifier {
         )
       : 1;
 
-    const edgePremium = 0;
+    const edgePremium = edgeProx?.overall ?? 0;
 
     const drawingOpennessThreshold = 0.35 + edgePremium * 0.15;
     const drawingDominanceThreshold = 0.25 + edgePremium * 0.10;
@@ -332,6 +349,7 @@ export class GestureClassifier {
     const eraserRatioThreshold = 0.40 + edgePremium * 0.12;
 
     if (integrityScore < 0.3) return null;
+    if (edgePremium > 0.85 && integrityScore < 0.8) return null;
 
     if (o.index >= drawingOpennessThreshold) {
       const othersMax = Math.max(o.thumb, o.middle, o.ring, o.pinky);

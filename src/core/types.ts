@@ -1,12 +1,22 @@
 export interface HandIntegrity {
   score: number;
+  completenessScore?: number;
   wristVisible: boolean;
   palmIntact: boolean;
+  mcpVisibleCount?: number;
+  indexChainValid?: boolean;
+  middleChainValid?: boolean;
+  partialCursorCandidate?: boolean;
+  visibilityMode?: VisibilityMode;
+  capabilityLevel?: InteractionCapabilityLevel;
   individualFingers: { thumb: boolean; index: boolean; middle: boolean; ring: boolean; pinky: boolean };
   requiredGroups: { drawing: boolean; cursor: boolean; eraser: boolean };
   edgeFlags: { anyEdge: boolean; leftEdge: boolean; rightEdge: boolean; topEdge: boolean; bottomEdge: boolean };
   missingLandmarkCount: number;
 }
+
+export type VisibilityMode = 'full' | 'partial' | 'recovery' | 'lost';
+export type InteractionCapabilityLevel = 'full' | 'partial_draw' | 'partial_cursor' | 'recovery' | 'lost';
 
 export interface EdgeProximityInfo {
   left: number;
@@ -23,8 +33,15 @@ export interface EdgeProximityInfo {
 export interface GestureFreezeState {
   frozen: boolean;
   lastStableGesture: GestureType;
+  lastStableConfidence?: number;
   freezeDurationMs: number;
   blendProgress: number;
+  freezeReason?: string;
+  freezeGraceActive?: boolean;
+  recoveryMode?: 'none' | 'frozen' | 'grace' | 'reentry' | 'hard_reset';
+  handReentry?: boolean;
+  handAbsenceMs?: number;
+  authorityOwner?: 'none' | 'tracking' | 'freeze' | 'prediction';
 }
 
 export interface SafeZoneState {
@@ -139,6 +156,14 @@ export interface GestureDebugInfo {
   safeZoneActive: boolean;
   smoothedConfidence?: number;
   freezeReason?: string;
+  freezeDurationMs?: number;
+  freezeGraceActive?: boolean;
+  recoveryMode?: 'none' | 'frozen' | 'grace' | 'reentry' | 'hard_reset';
+  handReentry?: boolean;
+  authorityOwner?: 'none' | 'tracking' | 'freeze' | 'prediction';
+  visibilityMode?: VisibilityMode;
+  capabilityLevel?: InteractionCapabilityLevel;
+  handAbsenceMs?: number;
   completenessScore?: number;
   topEdge: number;
   bottomEdge: number;

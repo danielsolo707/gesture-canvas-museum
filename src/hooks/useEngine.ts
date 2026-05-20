@@ -45,10 +45,6 @@ export function useEngine() {
           confidence: hand.confidence,
         })),
       );
-      if (hands.length === 0) {
-        useStore.getState().setGesture('idle', 'Left', 0);
-        useStore.getState().setGesture('idle', 'Right', 0);
-      }
       useStore.getState().setWebcamReady(true);
     });
 
@@ -60,9 +56,10 @@ export function useEngine() {
     if (staleIntervalRef.current === null) {
       staleIntervalRef.current = window.setInterval(() => {
         const now = Date.now();
-        if (now - lastHandUpdateRef.current < 900) return;
+        if (now - lastHandUpdateRef.current < 2400) return;
 
         const state = useStore.getState();
+        if (state.freezeActive || state.freezeGraceActive || state.recoveryMode === 'reentry') return;
         if (state.hands.length === 0 && state.currentGesture === 'idle') return;
 
         useStore.getState().setHands([]);

@@ -1,5 +1,5 @@
 import { EngineState, EngineMode, EngineStats, StrokePoint, HandSnapshot, GestureType, GestureDebugInfo, CursorState, Action, HandIntegrity, EdgeProximityInfo, GestureFreezeState } from './types';
-import { PERFORMANCE, GESTURE, INTERACTION, RENDER, FREEZE } from './constants';
+import { PERFORMANCE, GESTURE, INTERACTION, RENDER, FREEZE, DRAWING, VISIBILITY } from './constants';
 import { EventBus, globalEventBus } from './EventBus';
 import { GestureActionMapper } from './GestureActionMapper';
 import { WebcamManager } from '../tracking/WebcamManager';
@@ -78,6 +78,9 @@ export class Engine {
   private lastFreezeState: GestureFreezeState | null = null;
   private cursorFadeTimer = 0;
   private freezePredictedPos: { x: number; y: number } | null = null;
+  private trackingLossStartTime: number | null = null;
+  private authorityOwner: 'none' | 'tracking' | 'freeze' | 'prediction' = 'none';
+  private breakStrokeOnReentry = false;
 
   constructor(config: EngineConfig) {
     this.config = config;
@@ -248,6 +251,13 @@ export class Engine {
       this.bus.emit('hand_update', { hands });
 
       if (hands.length > 0) {
+        this.trackingLossStartTime = null;
+        this.freezeController.onHandVisible(now);
+      } else if (this.trackingLossStartTime === null) {
+        this.trackingLossStartTime = now;
+      }
+
+      if (hands.length > 0) {
         const pipelineStart = performance.now();
 
         // Step 1: Run gesture recognition FIRST to get actual gesture/confidence
@@ -278,11 +288,23 @@ export class Engine {
           integrity ?? this.zeroIntegrity(),
           edgeProx ?? this.zeroEdgeProx(), now,
         );
+        this.authorityOwner = freezeState.authorityOwner;
+
+        if (primaryGesture && primaryGesture !== 'idle') {
+          this.freezeController.registerStableGesture(primaryGesture, primaryConfidence, now);
+        }
 
         // Step 4: If frozen, re-run gesture recognition with freeze state for override
         const result = freezeState.frozen
           ? this.gesture.recognize(hands, now, integrity, edgeProx, freezeState)
           : initialResult;
+
+        if (this.breakStrokeOnReentry && this.activeDrawHands.size > 0) {
+          for (const handKey of [...this.activeDrawHands]) {
+            this.endActiveStroke(handKey);
+          }
+          this.breakStrokeOnReentry = false;
+        }
 
         for (const g of result.events) {
           this.bus.emit('gesture', g);
@@ -300,16 +322,44 @@ export class Engine {
 
         this.lastFreezeState = freezeState;
 
-        const effectiveGesture = freezeState.frozen ? freezeState.lastStableGesture : (primaryGesture ?? 'idle');
-        const effectiveConfidence = freezeState.frozen ? freezeState.lastStableConfidence : primaryConfidence;
+        const visibilityMode = integrity?.visibilityMode ?? 'recovery';
+        const capabilityLevel = integrity?.capabilityLevel ?? 'recovery';
+        const isConservativeTracking = (integrity?.score ?? 0) < VISIBILITY.LOW_INTEGRITY_THRESHOLD
+          || (edgeProx?.overall ?? 0) > VISIBILITY.EDGE_CONSERVATIVE_THRESHOLD
+          || freezeState.recoveryMode === 'reentry'
+          || visibilityMode !== 'full';
+        const effectiveGesture = freezeState.frozen
+          ? freezeState.lastStableGesture
+          : (isConservativeTracking && this.lastFreezeState?.lastStableGesture && this.lastFreezeState.lastStableGesture !== 'idle'
+            ? this.lastFreezeState.lastStableGesture
+            : (primaryGesture ?? 'idle'));
+        const effectiveConfidence = freezeState.frozen
+          ? freezeState.lastStableConfidence
+          : (isConservativeTracking && this.lastFreezeState?.lastStableConfidence
+            ? Math.max(primaryConfidence, this.lastFreezeState.lastStableConfidence * 0.85)
+            : primaryConfidence);
+
+        const capabilityGesture: GestureType = capabilityLevel === 'partial_draw'
+          ? 'drawing'
+          : capabilityLevel === 'partial_cursor'
+            ? ((this.lastFreezeState?.lastStableGesture ?? effectiveGesture) === 'drawing' ? 'drawing' : 'cursor')
+            : capabilityLevel === 'recovery'
+              ? ((this.lastFreezeState?.lastStableGesture === 'drawing' || this.lastFreezeState?.lastStableGesture === 'cursor')
+                ? this.lastFreezeState.lastStableGesture
+                : effectiveGesture)
+              : effectiveGesture;
+
+        const safeEffectiveGesture: GestureType = (capabilityLevel !== 'full' && capabilityGesture === 'eraser')
+          ? ((this.lastFreezeState?.lastStableGesture === 'cursor') ? 'cursor' : 'drawing')
+          : capabilityGesture;
 
         if (primaryGesture) {
-          useStore.getState().setGesture(effectiveGesture, sortedHands[0]?.handedness ?? 'Right', effectiveConfidence);
+          useStore.getState().setGesture(safeEffectiveGesture, sortedHands[0]?.handedness ?? 'Right', effectiveConfidence);
         }
 
         if (result.pipelineDebug) {
           const debugInfo: GestureDebugInfo = {
-            activeGesture: effectiveGesture,
+            activeGesture: safeEffectiveGesture,
             gestureConfidence: effectiveConfidence,
             motionSpeed: result.pipelineDebug.motionSpeed,
             stableCount: 0,
@@ -324,7 +374,15 @@ export class Engine {
             safeZoneActive: (edgeProx?.overall ?? 0) > 0.3,
             smoothedConfidence: result.pipelineDebug.smoothedConfidence,
             freezeReason: freezeState.freezeReason,
-            completenessScore: integrity?.score ?? 0,
+            freezeDurationMs: freezeState.freezeDurationMs,
+            freezeGraceActive: freezeState.freezeGraceActive,
+            recoveryMode: freezeState.recoveryMode,
+            handReentry: freezeState.handReentry,
+            authorityOwner: this.authorityOwner,
+            visibilityMode,
+            capabilityLevel,
+            handAbsenceMs: freezeState.handAbsenceMs,
+            completenessScore: integrity?.completenessScore ?? integrity?.score ?? 0,
             topEdge: edgeProx?.top ?? 0,
             bottomEdge: edgeProx?.bottom ?? 0,
             leftEdge: edgeProx?.left ?? 0,
@@ -338,17 +396,26 @@ export class Engine {
           edgeProx?.overall ?? 0,
           freezeState.frozen,
           freezeState.frozen,
-          freezeState.frozen && freezeState.lastStableGesture !== 'idle',
+          (freezeState.frozen || freezeState.freezeGraceActive) && freezeState.lastStableGesture !== 'idle',
           (edgeProx?.overall ?? 0) > 0.3,
           hands.length === 0,
           freezeState.freezeReason,
           result.pipelineDebug?.smoothedConfidence,
+          freezeState.freezeDurationMs,
+          freezeState.freezeGraceActive,
+          freezeState.recoveryMode,
+          freezeState.handReentry,
+          this.authorityOwner,
+          visibilityMode,
+          capabilityLevel,
+          freezeState.handAbsenceMs,
         );
 
         for (let i = 0; i < sortedHands.length; i++) {
           const hand = sortedHands[i];
           let handKey = getHandKey(hand, i);
-          const point = getDrawingPoint(hand.landmarks, this.config.canvas);
+          const idxTip = getLandmark(hand.landmarks, 8);
+          const point = getDrawingPointFromTip(idxTip, this.config.canvas, this.safeZoneMapper);
           if (!point) continue;
 
           // During freeze recovery, the hand may return with different handedness,
@@ -364,9 +431,36 @@ export class Engine {
           }
 
           const handState = result.handStates.get(hand.handedness);
-          const gestureType = freezeState.frozen ? freezeState.lastStableGesture : (handState?.type ?? null);
+          const unstableTracking = (integrity?.score ?? 0) < VISIBILITY.LOW_INTEGRITY_THRESHOLD
+            || (edgeProx?.overall ?? 0) > VISIBILITY.EDGE_CONSERVATIVE_THRESHOLD
+            || freezeState.recoveryMode === 'reentry'
+            || visibilityMode !== 'full';
+          let gestureType: GestureType | null = freezeState.frozen
+            ? freezeState.lastStableGesture
+            : (handState?.type ?? null);
 
-          const idxTip = getLandmark(hand.landmarks, 8);
+          if (unstableTracking && freezeState.lastStableGesture !== 'idle') {
+            gestureType = freezeState.lastStableGesture;
+          }
+
+          if (capabilityLevel === 'partial_draw' && integrity?.indexChainValid) {
+            gestureType = 'drawing';
+          } else if (capabilityLevel === 'partial_cursor' && integrity?.partialCursorCandidate) {
+            gestureType = this.activeDrawHands.size > 0 ? 'drawing' : 'cursor';
+          } else if (capabilityLevel === 'recovery') {
+            if (freezeState.lastStableGesture === 'drawing' || freezeState.lastStableGesture === 'cursor') {
+              gestureType = freezeState.lastStableGesture;
+            }
+          }
+
+          if (gestureType === 'eraser' && (
+            capabilityLevel !== 'full'
+            || (integrity?.score ?? 0) < VISIBILITY.ERASER_FULL_INTEGRITY_MIN
+            || (integrity?.requiredGroups.eraser ?? false) === false
+          )) {
+            gestureType = freezeState.lastStableGesture === 'drawing' ? 'drawing' : 'cursor';
+          }
+
           this.updateCursor(idxTip, gestureType, now, handState?.confidence ?? 0, integrity, edgeProx);
 
           if (gestureType === 'eraser') {
@@ -379,7 +473,11 @@ export class Engine {
 
           if (gestureType === 'cursor') {
             this.endActiveStroke(handKey);
-            this.handleCursorMode(hand, idxTip, now);
+            if (capabilityLevel === 'full' || capabilityLevel === 'partial_cursor') {
+              this.handleCursorMode(hand, idxTip, now);
+            } else {
+              this.deactivatePalette();
+            }
             continue;
           }
           this.deactivatePalette();
@@ -403,37 +501,75 @@ export class Engine {
 
         this._stats.pipelineLatencyMs = performance.now() - pipelineStart;
       } else {
-        const lastGesture = this.activeDrawHands.size > 0 ? 'drawing' : 'idle';
-        const freezeState = this.freezeController.update(
-          lastGesture, this.cursorState.opacity,
-          integrity ?? this.zeroIntegrity(), edgeProx ?? this.zeroEdgeProx(), now,
-        );
+        const freezeState = this.freezeController.onTrackingLost(now);
         this.lastFreezeState = freezeState;
+        this.authorityOwner = freezeState.authorityOwner;
 
-        if (freezeState.frozen && this.activeDrawHands.size > 0) {
+        const absenceMs = freezeState.handAbsenceMs;
+        const canPersistInteraction = freezeState.freezeGraceActive || (freezeState.frozen && absenceMs <= FREEZE.HARD_RESET_ABSENCE_MS);
+
+        if (canPersistInteraction && this.activeDrawHands.size > 0) {
+          this.breakStrokeOnReentry = true;
           const pred = this.predictiveCursor.getCurrent();
           if (pred) {
-            const decay = Math.max(0.5, 1 - (freezeState.freezeDurationMs / 400) * 0.5);
+            const decay = freezeState.freezeGraceActive
+              ? Math.max(0.7, 1 - (absenceMs / FREEZE.SHORT_LOSS_GRACE_MS) * 0.25)
+              : Math.max(0.45, 1 - (freezeState.freezeDurationMs / 600) * 0.55);
             const decayed = this.predictiveCursor.getDecayedPosition(decay);
             const safe = this.safeZoneMapper.map(decayed.x, decayed.y);
-            const freezePoint: StrokePoint = {
-              x: (safe.stabilizedX - 0.5) * 2 * (this.config.canvas.clientWidth / this.config.canvas.clientHeight),
-              y: -(safe.stabilizedY - 0.5) * 2,
-              z: 0,
-            };
-            for (const handKey of this.activeDrawHands) {
-              this.drawing.extendStroke(handKey, freezePoint);
-            }
             this.cursorState.easedX = decayed.x;
             this.cursorState.easedY = decayed.y;
           }
 
           this.cursorState.isDrawing = true;
-          this.cursorState.opacity = Math.max(0.15, this.cursorState.opacity - 0.02);
+          this.cursorState.opacity = Math.max(0.2, this.cursorState.opacity - 0.015);
           useStore.getState().setCursor(this.cursorState.easedX, this.cursorState.easedY, this.cursorState);
+
+          useStore.getState().setIntegrityDebug(
+            0,
+            this.lastEdgeProx?.overall ?? 0,
+            freezeState.frozen,
+            freezeState.frozen,
+            true,
+            (this.lastEdgeProx?.overall ?? 0) > 0.3,
+            true,
+            freezeState.freezeReason,
+            0,
+            freezeState.freezeDurationMs,
+            freezeState.freezeGraceActive,
+            freezeState.recoveryMode,
+            freezeState.handReentry,
+            this.authorityOwner,
+            'recovery',
+            'recovery',
+            absenceMs,
+          );
 
           this._stats.activeHands = 0;
           this._stats.pipelineLatencyMs = 0;
+          return;
+        }
+
+        if (absenceMs <= FREEZE.HARD_RESET_ABSENCE_MS) {
+          useStore.getState().setIntegrityDebug(
+            0,
+            this.lastEdgeProx?.overall ?? 0,
+            freezeState.frozen,
+            freezeState.frozen,
+            false,
+            (this.lastEdgeProx?.overall ?? 0) > 0.3,
+            true,
+            freezeState.freezeReason,
+            0,
+            freezeState.freezeDurationMs,
+            freezeState.freezeGraceActive,
+            freezeState.recoveryMode,
+            freezeState.handReentry,
+            this.authorityOwner,
+            'recovery',
+            'recovery',
+            absenceMs,
+          );
           return;
         }
 
@@ -442,9 +578,11 @@ export class Engine {
           if (data) this.bus.emit('stroke_added', data);
         }
         this.activeDrawHands.clear();
+        this.breakStrokeOnReentry = false;
         this.useStore().setGesture('idle', 'Left', 0);
         this.useStore().setGesture('idle', 'Right', 0);
         this.useStore().setIsDrawing(false);
+        this.authorityOwner = 'none';
 
         if (this.cursorState.opacity > 0.01) {
           this.cursorState.opacity = Math.max(0, this.cursorState.opacity - 0.04);
@@ -455,6 +593,26 @@ export class Engine {
         }
         this.useStore().setColorPaletteActive(false);
         this.deactivatePalette();
+
+        useStore.getState().setIntegrityDebug(
+          0,
+          0,
+          false,
+          false,
+          false,
+          false,
+          true,
+          'hard_absence',
+          0,
+          0,
+          false,
+          'hard_reset',
+          false,
+          this.authorityOwner,
+          'lost',
+          'lost',
+          absenceMs,
+        );
       }
 
       this._stats.activeHands = hands.length;
@@ -472,6 +630,13 @@ export class Engine {
       requiredGroups: { drawing: false, cursor: false, eraser: false },
       edgeFlags: { anyEdge: false, leftEdge: false, rightEdge: false, topEdge: false, bottomEdge: false },
       missingLandmarkCount: 21,
+      completenessScore: 0,
+      mcpVisibleCount: 0,
+      indexChainValid: false,
+      middleChainValid: false,
+      partialCursorCandidate: false,
+      visibilityMode: 'lost',
+      capabilityLevel: 'lost',
     };
   }
 
@@ -503,14 +668,20 @@ export class Engine {
       this.cursorState.targetX = safe.stabilizedX;
       this.cursorState.targetY = safe.stabilizedY;
 
+      const edge = edgeProx?.overall ?? 0;
+      const edgeConservative = edge > VISIBILITY.EDGE_CONSERVATIVE_THRESHOLD;
+      const reentryActive = this.lastFreezeState?.recoveryMode === 'reentry';
+      const centerBoost = edge <= INTERACTION.CENTER_RESPONSE_EDGE_MAX ? INTERACTION.CENTER_RESPONSE_BOOST : 1;
+      const adaptiveDamping = (edgeConservative || reentryActive ? 0.82 : 1) * centerBoost;
+
       const dx = this.cursorState.targetX - this.cursorState.easedX;
       const dy = this.cursorState.targetY - this.cursorState.easedY;
       const easeFactor = edgeProx && edgeProx.dampingFactor < 0.7
         ? INTERACTION.CURSOR_EASING_FACTOR * (1 + (1 - (edgeProx?.dampingFactor ?? 1)) * 0.5)
         : INTERACTION.CURSOR_EASING_FACTOR;
 
-      this.cursorState.easedX += dx * easeFactor;
-      this.cursorState.easedY += dy * easeFactor;
+      this.cursorState.easedX += dx * easeFactor * adaptiveDamping;
+      this.cursorState.easedY += dy * easeFactor * adaptiveDamping;
       this.cursorState.easedY = Math.max(this.cursorState.easedY, INTERACTION.UI_TOP_MARGIN);
 
       this.cursorState.x = this.cursorState.easedX;
@@ -547,7 +718,8 @@ export class Engine {
       if (this.lastFreezeState?.frozen) {
         const pred = this.predictiveCursor.getCurrent();
         if (pred) {
-          const decay = Math.max(0.3, 1 - (this.lastFreezeState.freezeDurationMs / 400) * 0.7);
+          const graceMs = this.lastFreezeState.handAbsenceMs ?? this.lastFreezeState.freezeDurationMs;
+          const decay = Math.max(0.35, 1 - (graceMs / 700) * 0.65);
           const decayed = this.predictiveCursor.getDecayedPosition(decay);
           this.cursorState.easedX = decayed.x;
           this.cursorState.easedY = decayed.y;
@@ -582,28 +754,46 @@ export class Engine {
   private handleCursorMode(hand: HandSnapshot, idxTip: [number, number, number] | null, now: number): void {
     if (!idxTip) return;
 
-    const isInPaletteZone = idxTip[0] < INTERACTION.PALETTE_ZONE_X;
+    const inActivatorRaw = idxTip[0] <= INTERACTION.PALETTE_ACTIVATOR_X_MAX
+      && idxTip[1] >= INTERACTION.PALETTE_ACTIVATOR_Y_MIN
+      && idxTip[1] <= INTERACTION.PALETTE_ACTIVATOR_Y_MAX;
+    const inActivatorEased = this.cursorState.easedX <= INTERACTION.PALETTE_ACTIVATOR_X_MAX
+      && this.cursorState.easedY >= INTERACTION.PALETTE_ACTIVATOR_Y_MIN
+      && this.cursorState.easedY <= INTERACTION.PALETTE_ACTIVATOR_Y_MAX;
+    const inPaletteRaw = idxTip[0] < INTERACTION.PALETTE_ZONE_X;
+    const inPaletteEased = this.cursorState.easedX < INTERACTION.PALETTE_ZONE_X;
+    const rawOut = idxTip[0] >= INTERACTION.PALETTE_DEACTIVATE_X;
+    const easedOut = this.cursorState.easedX >= INTERACTION.PALETTE_DEACTIVATE_X;
     const store = useStore.getState();
+    const paletteActive = store.colorPaletteActive;
 
-    if (isInPaletteZone) {
+    const shouldActivatePalette = paletteActive
+      ? (inPaletteRaw || inPaletteEased || inActivatorRaw || inActivatorEased)
+      : (inActivatorRaw || inActivatorEased);
+
+    if (shouldActivatePalette) {
       if (!this.paletteHoverActive) {
         this.paletteHoverActive = true;
       }
 
       store.setColorPaletteActive(true);
 
-      const normalizedY = Math.max(0, Math.min(1,
-        (this.cursorState.easedY - INTERACTION.PALETTE_Y_MIN)
-        / (INTERACTION.PALETTE_Y_MAX - INTERACTION.PALETTE_Y_MIN)
-      ));
-      const hoverIdx = Math.min(11, Math.max(0, Math.round(normalizedY * 11)));
-      store.setColorHoverIndex(hoverIdx);
+      // Only compute hover/color when eased cursor is inside the zone,
+      // so the color matches what the user visually sees
+      if (inPaletteEased) {
+        const normalizedY = Math.max(0, Math.min(1,
+          (this.cursorState.easedY - INTERACTION.PALETTE_Y_MIN)
+          / (INTERACTION.PALETTE_Y_MAX - INTERACTION.PALETTE_Y_MIN)
+        ));
+        const hoverIdx = Math.min(11, Math.max(0, Math.round(normalizedY * 11)));
+        store.setColorHoverIndex(hoverIdx);
 
-      if (hoverIdx !== this.colorDwellIndex) {
-        this.colorDwellIndex = hoverIdx;
-        this.colorEngine.selectColor(hoverIdx);
+        if (hoverIdx !== this.colorDwellIndex) {
+          this.colorDwellIndex = hoverIdx;
+          this.colorEngine.selectColor(hoverIdx);
+        }
       }
-    } else if (idxTip[0] >= INTERACTION.PALETTE_DEACTIVATE_X) {
+    } else if (rawOut && easedOut) {
       this.deactivatePalette();
     }
   }
@@ -619,15 +809,36 @@ export class Engine {
     const isFrozen = freezeState?.frozen ?? false;
     const atTop = !isFrozen && idxTip !== null && idxTip[1] < INTERACTION.DRAW_STOP_ZONE_Y;
 
-    if (!atTop) {
-      if (!this.activeDrawHands.has(handKey)) {
-        const state = useStore.getState();
-        this.drawing.startStroke(handKey, point, state.color, state.strokeWidth, hand.handedness);
-        this.activeDrawHands.add(handKey);
-        useStore.getState().setIsDrawing(true);
-      } else {
-        this.drawing.extendStroke(handKey, point);
-      }
+      if (!atTop) {
+        if (!this.activeDrawHands.has(handKey)) {
+          const state = useStore.getState();
+          this.drawing.startStroke(handKey, point, state.color, state.strokeWidth, hand.handedness);
+          this.activeDrawHands.add(handKey);
+          useStore.getState().setIsDrawing(true);
+        } else {
+        const active = this.drawing.getActiveStroke(handKey);
+        const last = active?.points[active.points.length - 1];
+        if (last) {
+          const dx = point.x - last.x;
+          const dy = point.y - last.y;
+          const dist = Math.hypot(dx, dy);
+          const speed = Math.max(0, Math.min(this._stats.motionSpeed, DRAWING.MAX_SEGMENT_SPEED_FACTOR));
+          const adaptiveMaxSegment = DRAWING.MAX_SEGMENT_DISTANCE
+            + Math.min(DRAWING.MAX_SEGMENT_SPEED_BOOST, speed * 0.04);
+
+          if (dist > adaptiveMaxSegment) {
+            this.endActiveStroke(handKey);
+            const state = useStore.getState();
+            this.drawing.startStroke(handKey, point, state.color, state.strokeWidth, hand.handedness);
+            this.activeDrawHands.add(handKey);
+            useStore.getState().setIsDrawing(true);
+          } else {
+            this.drawing.extendStroke(handKey, point);
+          }
+        } else {
+          this.drawing.extendStroke(handKey, point);
+        }
+        }
       if (now - this.lastStrokeUpdate > 16) {
         const active = this.drawing.getActiveStroke(handKey);
         if (active) {
@@ -689,13 +900,17 @@ function getLandmark(landmarks: Float32Array, index: number): [number, number, n
   return [landmarks[i], landmarks[i + 1], landmarks[i + 2]];
 }
 
-function getDrawingPoint(landmarks: Float32Array, canvas: HTMLCanvasElement): StrokePoint | null {
-  const idxTip = getLandmark(landmarks, 8);
+function getDrawingPointFromTip(
+  idxTip: [number, number, number] | null,
+  canvas: HTMLCanvasElement,
+  safeZoneMapper: SafeInteractionZoneMapper,
+): StrokePoint | null {
   if (!idxTip) return null;
+  const safe = safeZoneMapper.map(idxTip[0], idxTip[1]);
   const aspect = canvas.clientWidth / canvas.clientHeight;
   return {
-    x: (idxTip[0] - 0.5) * 2 * aspect,
-    y: -(idxTip[1] - 0.5) * 2,
+    x: (safe.stabilizedX - 0.5) * 2 * aspect,
+    y: -(safe.stabilizedY - 0.5) * 2,
     z: 0,
   };
 }
