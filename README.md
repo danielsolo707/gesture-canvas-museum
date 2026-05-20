@@ -7,7 +7,7 @@ Museum-grade interactive gesture drawing system. Visitors draw in the air using 
 - **3 precise gestures** — Drawing (single index), Cursor (index + middle), Eraser (open palm)
 - **Edge-aware tracking** — stable near viewport edges; gesture sensitivity decreases and transitions become more conservative near boundaries
 - **Partial-hand recovery** — when fingers exit the frame, the system preserves the previous stable gesture instead of switching erratically
-- **Gesture freeze logic** — brief tracking interruptions keep the last stable gesture active (up to 400ms), preventing accidental mode switches
+- **Gesture freeze logic** — brief tracking interruptions keep the last stable gesture active (up to 700ms grace, 4500ms total), preventing accidental mode switches
 - **Confidence gating** — smoothed/decayed confidence values gate all gesture transitions; jittery tracking never triggers aggressive changes
 - **Predictive cursor** — velocity-based extrapolation during temporary tracking loss prevents snapping and maintains continuity
 - **Safe interaction zone** — sigmoid-based coordinate compression maps the full viewport into a stabilized inner zone, reducing edge instability
@@ -15,13 +15,14 @@ Museum-grade interactive gesture drawing system. Visitors draw in the air using 
 - **Closest-hand tracking** — only the hand nearest the camera is tracked; background visitors are ignored
 - **Handedness correction** — correctly identifies left vs right hand despite the mirrored camera feed
 - **Depth-of-field filtering** — hands too small (far away) are rejected (threshold: normalized scale < 0.07)
-- **Gesture persistence** — tracking interruptions up to 800ms don't break the active gesture via velocity-based extrapolation with drift damping
+- **Gesture persistence** — tracking interruptions up to 700ms (grace) keep the active gesture via velocity-based extrapolation with drift damping; hard reset after 2000ms absence
 - **Distance-based finger openness** — MCP-to-TIP distance normalized by wrist-to-middleMCP (more robust than angle-based)
 - **Three.js ribbon rendering** — colorful interpolated stroke ribbons with smooth curves
 - **Fallback mode** — mouse support for testing without webcam
 - **CPU-only MediaPipe** — Web Worker with main-thread fallback, all assets loaded locally
 - **Kiosk-ready** — idle reset (2 min), watchdog, fullscreen, keyboard/menu blocking for museum displays
 - **Attract mode** — auto-cycles colors when idle (15s) to draw visitors in
+- **Self-hosted download** — snapshot captured on click, uploaded to the same server via `/api/upload`, QR encodes `origin + /api/download/<uuid>` — no external service needed
 - **Diagnostic tools** — realtime pipeline debug panel showing confidence, edge proximity, freeze state, hand completeness, and extrapolation activity
 
 ## Gesture Reference
@@ -66,6 +67,20 @@ npm run start:local
 
 No CDN is used at runtime. MediaPipe loads from the local `@mediapipe/tasks-vision` package, local WASM files copied into `public/tasks-vision/wasm`, and the local hand model in `public/models`.
 
+## Download / QR
+
+When the download button is clicked, a full-scene JPEG snapshot is captured from the main canvas, then uploaded to the same server:
+
+```
+canvas snapshot → POST /api/upload → { downloadUrl: "/api/download/<uuid>" }
+                                       QR encodes window.location.origin + downloadUrl
+```
+
+- Dev mode: the Vite plugin in `vite.config.ts` registers the download API routes
+- Production: `scripts/serve-prod.mjs` serves `dist/` with the same API
+- No external service needed; all data stays on the local machine
+- The QR is scannable on any phone on the same network
+
 ## Development
 
 ```bash
@@ -103,6 +118,9 @@ src/
   ui/         React components, FingertipCursor, debug panels, styles
   utils/      PredictiveCursor, Diagnostics, KioskMode, math, logging
   workers/    tracking.worker.ts (MediaPipe HandLandmarker in worker thread)
+scripts/
+  serve-prod.mjs        Production Node server (serves dist/ + download API)
+  download-server.mjs   Shared upload/download route handlers (used by Vite plugin + production)
 ```
 
 ### Pipeline
@@ -131,7 +149,7 @@ Low tracking quality → System becomes MORE conservative:
   1. Edge proximity detected?        → Boost gesture thresholds, require more frames
   2. Confidence drops?               → Gate gesture transitions, persist current state
   3. Hand becomes incomplete?         → Freeze last stable gesture, enable prediction
-  4. Tracking returns?               → Blend extrapolated → real over 5 frames
+  4. Tracking returns?               → Blend extrapolated → real over 3 frames
   5. Cursor needs stabilization?     → Sigmoid safe-zone mapping + velocity prediction
 ```
 
@@ -159,9 +177,10 @@ Low tracking quality → System becomes MORE conservative:
 ## Commands
 
 ```bash
-npm run dev             # Development server
-npm run build           # Production build
-npm run start:local     # Local kiosk server at http://localhost:3000
+npm run dev             # Development server (Vite + download API)
+npm run build           # Production build → dist/
+npm run start           # Production server (Node) at http://0.0.0.0:3000
+npm run start:local     # Vite preview at http://localhost:3000
 npm run typecheck       # TypeScript check
 npm run test            # Run unit tests
 npm run test:watch      # Watch mode for tests
